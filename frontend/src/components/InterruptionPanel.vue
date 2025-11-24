@@ -54,6 +54,9 @@ function handleSubmit() {
 
 <style scoped>
 .panel {
+  background: #fff;
+  border-radius: 12px;
+  padding: 1.5rem;
   display: flex;
   flex-direction: column;
   gap: 1rem;
