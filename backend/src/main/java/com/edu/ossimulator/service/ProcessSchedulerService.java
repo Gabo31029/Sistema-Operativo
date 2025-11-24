@@ -17,6 +17,7 @@ import java.util.Comparator;
 import java.util.Deque;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
 
 @Service
@@ -32,6 +33,10 @@ public class ProcessSchedulerService {
     private ProcessControlBlock runningProcess;
     private SchedulerAlgorithm lastAlgorithm = SchedulerAlgorithm.FCFS;
     private int lastQuantum = 2;
+    private Thread simulationThread;
+    private final AtomicBoolean shouldStop = new AtomicBoolean(false);
+    private final Object pauseLock = new Object();
+    private boolean isPaused = false;
 
     public synchronized ProcessControlBlock createProcess(CreateProcessRequest request) {
         ProcessControlBlock pcb = new ProcessControlBlock(
@@ -66,45 +71,104 @@ public class ProcessSchedulerService {
 
     public synchronized void startSimulation(SimulationRequest request) {
         Assert.notNull(request.getAlgorithm(), "Algorithm is required");
+        
+        // Si hay una simulación en curso, detenerla primero
+        if (status == SimulationStatus.RUNNING || status == SimulationStatus.PAUSED) {
+            stopSimulation();
+        }
+        
         this.status = SimulationStatus.RUNNING;
         this.lastAlgorithm = request.getAlgorithm();
         this.lastQuantum = Optional.ofNullable(request.getQuantum()).orElse(lastQuantum);
+        this.shouldStop.set(false);
+        this.isPaused = false;
         resetQueues();
+        timeline.clear();
 
         List<ProcessControlBlock> workingSet = processTable.stream()
                 .sorted(Comparator.comparingInt(ProcessControlBlock::getArrivalTime))
                 .collect(Collectors.toList());
 
-        List<TimelineEntry> newTimeline = switch (request.getAlgorithm()) {
-            case FCFS -> runFcfs(workingSet);
-            case ROUND_ROBIN -> runRoundRobin(workingSet, this.lastQuantum);
-            case PRIORITY -> runPriority(workingSet);
-            case SJF -> runSjf(workingSet);
-        };
-
-        timeline.clear();
-        timeline.addAll(newTimeline);
-        rebuildQueuesFromProcesses();
-        this.status = SimulationStatus.COMPLETED;
+        // Ejecutar la simulación en un hilo separado
+        simulationThread = new Thread(() -> {
+            try {
+                switch (request.getAlgorithm()) {
+                    case FCFS -> runFcfsReal(workingSet);
+                    case ROUND_ROBIN -> runRoundRobinReal(workingSet, this.lastQuantum);
+                    case PRIORITY -> runPriorityReal(workingSet);
+                    case SJF -> runSjfReal(workingSet);
+                }
+                synchronized (this) {
+                    if (status != SimulationStatus.STOPPED) {
+                        this.status = SimulationStatus.COMPLETED;
+                    }
+                    runningProcess = null;
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                synchronized (this) {
+                    this.status = SimulationStatus.STOPPED;
+                    runningProcess = null;
+                }
+            }
+        });
+        
+        simulationThread.start();
     }
 
     public synchronized void pauseSimulation() {
         if (status == SimulationStatus.RUNNING) {
             status = SimulationStatus.PAUSED;
+            isPaused = true;
+            synchronized (pauseLock) {
+                pauseLock.notifyAll();
+            }
         }
     }
 
     public synchronized void resumeSimulation() {
         if (status == SimulationStatus.PAUSED) {
             status = SimulationStatus.RUNNING;
+            isPaused = false;
+            synchronized (pauseLock) {
+                pauseLock.notifyAll();
+            }
         }
     }
 
     public synchronized void stopSimulation() {
+        shouldStop.set(true);
+        isPaused = false;
         status = SimulationStatus.STOPPED;
         runningProcess = null;
-        readyQueue.clear();
-        waitingQueue.clear();
+        synchronized (pauseLock) {
+            pauseLock.notifyAll();
+        }
+        if (simulationThread != null && simulationThread.isAlive()) {
+            simulationThread.interrupt();
+        }
+    }
+    
+    private void waitForPause() throws InterruptedException {
+        synchronized (pauseLock) {
+            while (isPaused && !shouldStop.get()) {
+                pauseLock.wait();
+            }
+        }
+    }
+    
+    private void sleepWithPause(long milliseconds) throws InterruptedException {
+        long startTime = System.currentTimeMillis();
+        while (System.currentTimeMillis() - startTime < milliseconds) {
+            if (shouldStop.get()) {
+                throw new InterruptedException("Simulation stopped");
+            }
+            waitForPause();
+            long remaining = milliseconds - (System.currentTimeMillis() - startTime);
+            if (remaining > 0) {
+                Thread.sleep(Math.min(remaining, 100)); // Sleep in small chunks to check pause/stop
+            }
+        }
     }
 
     public synchronized void emitInterruption(InterruptionRequest request) {
@@ -207,6 +271,48 @@ public class ProcessSchedulerService {
         }
         return entries;
     }
+    
+    private void runFcfsReal(List<ProcessControlBlock> processes) throws InterruptedException {
+        List<ProcessControlBlock> ordered = processes.stream()
+                .sorted(Comparator.comparingInt(ProcessControlBlock::getArrivalTime)
+                        .thenComparingLong(ProcessControlBlock::getPid))
+                .collect(Collectors.toList());
+
+        int time = 0;
+        for (ProcessControlBlock pcb : ordered) {
+            if (shouldStop.get()) {
+                break;
+            }
+            
+            // Esperar hasta el tiempo de llegada
+            int waitTime = Math.max(0, pcb.getArrivalTime() - time);
+            if (waitTime > 0) {
+                sleepWithPause(waitTime * 1000L); // Convertir segundos a milisegundos
+            }
+            time = Math.max(time, pcb.getArrivalTime());
+            
+            // Marcar proceso como RUNNING
+            synchronized (this) {
+                pcb.setState(ProcessState.RUNNING);
+                runningProcess = pcb;
+                readyQueue.remove(pcb);
+                int start = time;
+                timeline.add(new TimelineEntry(pcb.getPid(), pcb.getName(), start, start + pcb.getBurstTime(), SchedulerAlgorithm.FCFS));
+            }
+            
+            // Esperar el burst time real
+            sleepWithPause(pcb.getBurstTime() * 1000L);
+            
+            // Marcar proceso como TERMINATED
+            synchronized (this) {
+                pcb.setState(ProcessState.TERMINATED);
+                pcb.setRemainingTime(0);
+                runningProcess = null;
+                terminatedQueue.add(pcb);
+                time += pcb.getBurstTime();
+            }
+        }
+    }
 
     private List<TimelineEntry> runPriority(List<ProcessControlBlock> processes) {
         List<TimelineEntry> entries = new ArrayList<>();
@@ -239,6 +345,55 @@ public class ProcessSchedulerService {
         }
         return entries;
     }
+    
+    private void runPriorityReal(List<ProcessControlBlock> processes) throws InterruptedException {
+        List<ProcessControlBlock> queue = new ArrayList<>(processes.stream()
+                .sorted(Comparator.comparingInt(ProcessControlBlock::getArrivalTime))
+                .collect(Collectors.toList()));
+
+        int time = 0;
+        while (!queue.isEmpty() && !shouldStop.get()) {
+            int currentTime = time;
+            List<ProcessControlBlock> available = queue.stream()
+                    .filter(p -> p.getArrivalTime() <= currentTime)
+                    .collect(Collectors.toList());
+            
+            if (available.isEmpty()) {
+                int nextArrival = queue.get(0).getArrivalTime();
+                int waitTime = nextArrival - time;
+                if (waitTime > 0) {
+                    sleepWithPause(waitTime * 1000L);
+                }
+                time = nextArrival;
+                continue;
+            }
+            
+            ProcessControlBlock next = available.stream()
+                    .min(Comparator.comparingInt(ProcessControlBlock::getPriority)
+                            .thenComparing(ProcessControlBlock::getArrivalTime))
+                    .orElseThrow();
+
+            queue.remove(next);
+            
+            synchronized (this) {
+                next.setState(ProcessState.RUNNING);
+                runningProcess = next;
+                readyQueue.remove(next);
+                int start = time;
+                timeline.add(new TimelineEntry(next.getPid(), next.getName(), start, start + next.getBurstTime(), SchedulerAlgorithm.PRIORITY));
+            }
+            
+            sleepWithPause(next.getBurstTime() * 1000L);
+            
+            synchronized (this) {
+                next.setState(ProcessState.TERMINATED);
+                next.setRemainingTime(0);
+                runningProcess = null;
+                terminatedQueue.add(next);
+                time += next.getBurstTime();
+            }
+        }
+    }
 
     private List<TimelineEntry> runSjf(List<ProcessControlBlock> processes) {
         List<TimelineEntry> entries = new ArrayList<>();
@@ -270,6 +425,55 @@ public class ProcessSchedulerService {
             time = end;
         }
         return entries;
+    }
+    
+    private void runSjfReal(List<ProcessControlBlock> processes) throws InterruptedException {
+        List<ProcessControlBlock> queue = new ArrayList<>(processes.stream()
+                .sorted(Comparator.comparingInt(ProcessControlBlock::getArrivalTime))
+                .collect(Collectors.toList()));
+
+        int time = 0;
+        while (!queue.isEmpty() && !shouldStop.get()) {
+            int currentTime = time;
+            List<ProcessControlBlock> available = queue.stream()
+                    .filter(p -> p.getArrivalTime() <= currentTime)
+                    .collect(Collectors.toList());
+            
+            if (available.isEmpty()) {
+                int nextArrival = queue.get(0).getArrivalTime();
+                int waitTime = nextArrival - time;
+                if (waitTime > 0) {
+                    sleepWithPause(waitTime * 1000L);
+                }
+                time = nextArrival;
+                continue;
+            }
+            
+            ProcessControlBlock next = available.stream()
+                    .min(Comparator.comparingInt(ProcessControlBlock::getBurstTime)
+                            .thenComparing(ProcessControlBlock::getArrivalTime))
+                    .orElseThrow();
+
+            queue.remove(next);
+            
+            synchronized (this) {
+                next.setState(ProcessState.RUNNING);
+                runningProcess = next;
+                readyQueue.remove(next);
+                int start = time;
+                timeline.add(new TimelineEntry(next.getPid(), next.getName(), start, start + next.getBurstTime(), SchedulerAlgorithm.SJF));
+            }
+            
+            sleepWithPause(next.getBurstTime() * 1000L);
+            
+            synchronized (this) {
+                next.setState(ProcessState.TERMINATED);
+                next.setRemainingTime(0);
+                runningProcess = null;
+                terminatedQueue.add(next);
+                time += next.getBurstTime();
+            }
+        }
     }
 
     private List<TimelineEntry> runRoundRobin(List<ProcessControlBlock> processes, int quantum) {
@@ -308,6 +512,74 @@ public class ProcessSchedulerService {
             }
         }
         return entries;
+    }
+    
+    private void runRoundRobinReal(List<ProcessControlBlock> processes, int quantum) throws InterruptedException {
+        Deque<ProcessControlBlock> queue = new ArrayDeque<>();
+        List<ProcessControlBlock> sorted = processes.stream()
+                .sorted(Comparator.comparingInt(ProcessControlBlock::getArrivalTime))
+                .collect(Collectors.toList());
+
+        int time = 0;
+        int index = 0;
+        while ((!queue.isEmpty() || index < sorted.size()) && !shouldStop.get()) {
+            // Agregar procesos que han llegado
+            while (index < sorted.size() && sorted.get(index).getArrivalTime() <= time) {
+                ProcessControlBlock pcb = sorted.get(index);
+                pcb.setState(ProcessState.READY);
+                queue.offer(pcb);
+                index++;
+            }
+            
+            if (queue.isEmpty()) {
+                if (index < sorted.size()) {
+                    int nextArrival = sorted.get(index).getArrivalTime();
+                    int waitTime = nextArrival - time;
+                    if (waitTime > 0) {
+                        sleepWithPause(waitTime * 1000L);
+                    }
+                    time = nextArrival;
+                }
+                continue;
+            }
+            
+            ProcessControlBlock pcb = queue.poll();
+            int start = time;
+            int slice = Math.min(quantum, pcb.getRemainingTime());
+            
+            synchronized (this) {
+                pcb.setState(ProcessState.RUNNING);
+                runningProcess = pcb;
+                readyQueue.remove(pcb);
+                timeline.add(new TimelineEntry(pcb.getPid(), pcb.getName(), start, start + slice, SchedulerAlgorithm.ROUND_ROBIN));
+            }
+            
+            // Esperar el tiempo del quantum
+            sleepWithPause(slice * 1000L);
+            
+            synchronized (this) {
+                pcb.setRemainingTime(pcb.getRemainingTime() - slice);
+                time += slice;
+                
+                if (pcb.getRemainingTime() > 0) {
+                    pcb.setState(ProcessState.READY);
+                    runningProcess = null;
+                    // Agregar procesos que llegaron durante la ejecución
+                    while (index < sorted.size() && sorted.get(index).getArrivalTime() <= time) {
+                        ProcessControlBlock newPcb = sorted.get(index);
+                        newPcb.setState(ProcessState.READY);
+                        queue.offer(newPcb);
+                        index++;
+                    }
+                    queue.offer(pcb);
+                } else {
+                    pcb.setState(ProcessState.TERMINATED);
+                    pcb.setRemainingTime(0);
+                    runningProcess = null;
+                    terminatedQueue.add(pcb);
+                }
+            }
+        }
     }
 }
 

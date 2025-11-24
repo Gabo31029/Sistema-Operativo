@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import ProcessForm from './components/ProcessForm.vue'
 import ProcessTable from './components/ProcessTable.vue'
 import QueuesPanel from './components/QueuesPanel.vue'
@@ -106,9 +106,24 @@ async function handleInterruption(payload) {
 
 let refreshInterval
 
+function setupRefreshInterval() {
+  // Limpiar intervalo anterior si existe
+  if (refreshInterval) {
+    clearInterval(refreshInterval)
+  }
+  
+  // Actualizar cada 1 segundo (1000ms)
+  refreshInterval = setInterval(refreshAll, 1000)
+}
+
 onMounted(() => {
   refreshAll()
-  refreshInterval = setInterval(refreshAll, 4000)
+  setupRefreshInterval()
+  
+  // Observar cambios en el estado para ajustar el intervalo
+  watch(() => systemState.value.status, () => {
+    setupRefreshInterval()
+  })
 })
 
 onUnmounted(() => {
