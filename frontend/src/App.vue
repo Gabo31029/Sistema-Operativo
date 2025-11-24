@@ -120,25 +120,8 @@ onUnmounted(() => {
 
 <template>
   <main class="workspace">
-    <nav class="aws-topbar">
-      <div class="brand">
-        <span class="logo-dot"></span>
-        <strong>EduOS Console</strong>
-      </div>
-      <div class="env-pill">sandbox</div>
-    </nav>
-
     <header class="strip">
-      <div>
-        <p class="eyebrow">Simulador SO</p>
-        <h1>Planificador educativo</h1>
-      </div>
-      <div class="status">
-        <span>{{ systemState.status }}</span>
-        <small v-if="systemState.runningProcess">
-          RUN {{ systemState.runningProcess.name }} · PID {{ systemState.runningProcess.pid }}
-        </small>
-      </div>
+        <h1 class="sim">Simulador de un SO</h1>
     </header>
 
     <section class="summary-strip">
