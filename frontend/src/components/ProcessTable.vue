@@ -36,7 +36,11 @@ defineProps({
           </td>
           <td>{{ process.arrivalTime }}</td>
           <td>{{ process.burstTime }}</td>
-          <td>{{ process.remainingTime }}</td>
+          <td>
+            <span class="remaining-time" :class="{ 'running': process.state === 'RUNNING' }">
+              {{ process.remainingTime }}
+            </span>
+          </td>
           <td>{{ process.priority }}</td>
         </tr>
       </tbody>
@@ -49,7 +53,6 @@ defineProps({
   background: #fff;
   border-radius: 12px;
   padding: 1.5rem;
-  box-shadow: 0 2px 10px rgba(15, 23, 42, 0.08);
 }
 
 table {
@@ -83,6 +86,25 @@ td {
 
 .state[data-state='TERMINATED'] {
   color: #6b7280;
+}
+
+.remaining-time {
+  font-weight: 600;
+  font-size: 1.1em;
+}
+
+.remaining-time.running {
+  color: #16a34a;
+  animation: pulse 1s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.7;
+  }
 }
 </style>
 

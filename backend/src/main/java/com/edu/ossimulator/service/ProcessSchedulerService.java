@@ -1,16 +1,5 @@
 package com.edu.ossimulator.service;
 
-import com.edu.ossimulator.dto.CreateProcessRequest;
-import com.edu.ossimulator.dto.InterruptionRequest;
-import com.edu.ossimulator.dto.SimulationRequest;
-import com.edu.ossimulator.dto.SystemStateResponse;
-import com.edu.ossimulator.dto.TimelineEntry;
-import com.edu.ossimulator.model.ProcessControlBlock;
-import com.edu.ossimulator.model.ProcessState;
-import com.edu.ossimulator.model.SchedulerAlgorithm;
-import org.springframework.stereotype.Service;
-import org.springframework.util.Assert;
-
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -19,6 +8,18 @@ import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
+
+import org.springframework.stereotype.Service;
+import org.springframework.util.Assert;
+
+import com.edu.ossimulator.dto.CreateProcessRequest;
+import com.edu.ossimulator.dto.InterruptionRequest;
+import com.edu.ossimulator.dto.SimulationRequest;
+import com.edu.ossimulator.dto.SystemStateResponse;
+import com.edu.ossimulator.dto.TimelineEntry;
+import com.edu.ossimulator.model.ProcessControlBlock;
+import com.edu.ossimulator.model.ProcessState;
+import com.edu.ossimulator.model.SchedulerAlgorithm;
 
 @Service
 public class ProcessSchedulerService {
@@ -196,6 +197,20 @@ public class ProcessSchedulerService {
         if (runningProcess == pcb) {
             runningProcess = null;
         }
+        
+        // Programar que el proceso vuelva a READY después de 5 segundos (simulando I/O completado)
+        new Thread(() -> {
+            try {
+                Thread.sleep(5000); // Esperar 5 segundos para simular I/O
+                synchronized (this) {
+                    if (pcb.getState() == ProcessState.WAITING && !shouldStop.get()) {
+                        moveToReady(pcb, "I/O completed");
+                    }
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }).start();
     }
 
     private void moveToReady(ProcessControlBlock pcb, String reason) {
@@ -273,43 +288,122 @@ public class ProcessSchedulerService {
     }
     
     private void runFcfsReal(List<ProcessControlBlock> processes) throws InterruptedException {
-        List<ProcessControlBlock> ordered = processes.stream()
-                .sorted(Comparator.comparingInt(ProcessControlBlock::getArrivalTime)
-                        .thenComparingLong(ProcessControlBlock::getPid))
-                .collect(Collectors.toList());
-
+        // Usar una cola dinámica que se actualiza con procesos que vuelven de WAITING
+        Deque<ProcessControlBlock> queue = new ArrayDeque<>();
+        List<ProcessControlBlock> allProcesses = new ArrayList<>(processes);
+        allProcesses.forEach(p -> p.resetRuntimeData());
+        
         int time = 0;
-        for (ProcessControlBlock pcb : ordered) {
-            if (shouldStop.get()) {
-                break;
+        int nextArrivalIndex = 0;
+        
+        while ((!queue.isEmpty() || nextArrivalIndex < allProcesses.size() || 
+                !waitingQueue.isEmpty() || !readyQueue.isEmpty()) && !shouldStop.get()) {
+            
+            // Agregar procesos que han llegado
+            while (nextArrivalIndex < allProcesses.size()) {
+                ProcessControlBlock p = allProcesses.get(nextArrivalIndex);
+                if (p.getArrivalTime() <= time) {
+                    synchronized (this) {
+                        if (p.getState() != ProcessState.TERMINATED && p.getState() != ProcessState.WAITING) {
+                            p.setState(ProcessState.READY);
+                            if (!queue.contains(p) && !readyQueue.contains(p)) {
+                                queue.offer(p);
+                            }
+                        }
+                    }
+                    nextArrivalIndex++;
+                } else {
+                    break;
+                }
             }
             
-            // Esperar hasta el tiempo de llegada
-            int waitTime = Math.max(0, pcb.getArrivalTime() - time);
-            if (waitTime > 0) {
-                sleepWithPause(waitTime * 1000L); // Convertir segundos a milisegundos
-            }
-            time = Math.max(time, pcb.getArrivalTime());
-            
-            // Marcar proceso como RUNNING
+            // Agregar procesos que volvieron de WAITING a READY
             synchronized (this) {
+                List<ProcessControlBlock> readyFromWaiting = new ArrayList<>(readyQueue);
+                for (ProcessControlBlock p : readyFromWaiting) {
+                    if (p.getState() == ProcessState.READY && !queue.contains(p) && 
+                        p.getArrivalTime() <= time && p.getRemainingTime() > 0) {
+                        queue.offer(p);
+                    }
+                }
+            }
+            
+            // Si no hay procesos listos, esperar hasta el próximo evento
+            if (queue.isEmpty()) {
+                int nextTime = Integer.MAX_VALUE;
+                if (nextArrivalIndex < allProcesses.size()) {
+                    nextTime = Math.min(nextTime, allProcesses.get(nextArrivalIndex).getArrivalTime());
+                }
+                // Verificar si hay procesos en WAITING que podrían volver pronto
+                synchronized (this) {
+                    if (!waitingQueue.isEmpty()) {
+                        // Esperar un poco para que los procesos en WAITING puedan volver (máximo 6 segundos)
+                        nextTime = Math.min(nextTime, time + 6);
+                    }
+                }
+                if (nextTime == Integer.MAX_VALUE) break;
+                if (nextTime > time) {
+                    sleepWithPause((nextTime - time) * 1000L);
+                    time = nextTime;
+                }
+                continue;
+            }
+            
+            ProcessControlBlock pcb = queue.poll();
+            
+            // Verificar que el proceso esté listo para ejecutarse
+            synchronized (this) {
+                if (pcb.getState() != ProcessState.READY || pcb.getRemainingTime() <= 0) {
+                    continue;
+                }
                 pcb.setState(ProcessState.RUNNING);
                 runningProcess = pcb;
                 readyQueue.remove(pcb);
                 int start = time;
-                timeline.add(new TimelineEntry(pcb.getPid(), pcb.getName(), start, start + pcb.getBurstTime(), SchedulerAlgorithm.FCFS));
+                timeline.add(new TimelineEntry(pcb.getPid(), pcb.getName(), start, start + pcb.getRemainingTime(), SchedulerAlgorithm.FCFS));
             }
             
-            // Esperar el burst time real
-            sleepWithPause(pcb.getBurstTime() * 1000L);
+            // Esperar el burst time real, actualizando remainingTime cada segundo
+            int remaining = pcb.getRemainingTime();
+            int executed = 0;
+            for (int i = 0; i < remaining && !shouldStop.get(); i++) {
+                sleepWithPause(1000L);
+                synchronized (this) {
+                    // Verificar si el proceso fue movido a WAITING por una interrupción
+                    if (pcb.getState() == ProcessState.WAITING || pcb.getState() == ProcessState.TERMINATED) {
+                        // El proceso fue interrumpido o terminado, salir del loop
+                        break;
+                    }
+                    if (pcb.getRemainingTime() > 0) {
+                        pcb.setRemainingTime(pcb.getRemainingTime() - 1);
+                        executed++;
+                    }
+                }
+            }
             
-            // Marcar proceso como TERMINATED
             synchronized (this) {
-                pcb.setState(ProcessState.TERMINATED);
-                pcb.setRemainingTime(0);
-                runningProcess = null;
-                terminatedQueue.add(pcb);
-                time += pcb.getBurstTime();
+                // Verificar el estado final del proceso
+                if (pcb.getState() == ProcessState.WAITING) {
+                    // El proceso fue interrumpido y está en WAITING
+                    runningProcess = null;
+                    time += executed;
+                    // El proceso ya está en waitingQueue, continuar con el siguiente
+                    continue;
+                } else if (pcb.getRemainingTime() <= 0 || pcb.getState() == ProcessState.TERMINATED) {
+                    // Proceso terminado
+                    pcb.setState(ProcessState.TERMINATED);
+                    pcb.setRemainingTime(0);
+                    runningProcess = null;
+                    terminatedQueue.add(pcb);
+                    time += executed;
+                } else {
+                    // Esto no debería pasar, pero por seguridad
+                    pcb.setState(ProcessState.TERMINATED);
+                    pcb.setRemainingTime(0);
+                    runningProcess = null;
+                    terminatedQueue.add(pcb);
+                    time += executed;
+                }
             }
         }
     }
@@ -383,14 +477,40 @@ public class ProcessSchedulerService {
                 timeline.add(new TimelineEntry(next.getPid(), next.getName(), start, start + next.getBurstTime(), SchedulerAlgorithm.PRIORITY));
             }
             
-            sleepWithPause(next.getBurstTime() * 1000L);
+            // Esperar el burst time real, actualizando remainingTime cada segundo
+            int remaining = next.getRemainingTime();
+            int executed = 0;
+            for (int i = 0; i < remaining && !shouldStop.get(); i++) {
+                sleepWithPause(1000L); // Esperar 1 segundo
+                synchronized (this) {
+                    // Verificar si el proceso fue movido a WAITING por una interrupción
+                    if (next.getState() == ProcessState.WAITING || next.getState() == ProcessState.TERMINATED) {
+                        // El proceso fue interrumpido o terminado, salir del loop
+                        break;
+                    }
+                    if (next.getRemainingTime() > 0) {
+                        next.setRemainingTime(next.getRemainingTime() - 1);
+                        executed++;
+                    }
+                }
+            }
             
             synchronized (this) {
-                next.setState(ProcessState.TERMINATED);
-                next.setRemainingTime(0);
-                runningProcess = null;
-                terminatedQueue.add(next);
-                time += next.getBurstTime();
+                // Verificar el estado final del proceso
+                if (next.getState() == ProcessState.WAITING) {
+                    // El proceso fue interrumpido y está en WAITING
+                    runningProcess = null;
+                    time += executed;
+                    // El proceso ya está en waitingQueue, continuar con el siguiente
+                    continue;
+                } else {
+                    // Proceso terminado
+                    next.setState(ProcessState.TERMINATED);
+                    next.setRemainingTime(0);
+                    runningProcess = null;
+                    terminatedQueue.add(next);
+                    time += executed;
+                }
             }
         }
     }
@@ -464,14 +584,40 @@ public class ProcessSchedulerService {
                 timeline.add(new TimelineEntry(next.getPid(), next.getName(), start, start + next.getBurstTime(), SchedulerAlgorithm.SJF));
             }
             
-            sleepWithPause(next.getBurstTime() * 1000L);
+            // Esperar el burst time real, actualizando remainingTime cada segundo
+            int remaining = next.getRemainingTime();
+            int executed = 0;
+            for (int i = 0; i < remaining && !shouldStop.get(); i++) {
+                sleepWithPause(1000L); // Esperar 1 segundo
+                synchronized (this) {
+                    // Verificar si el proceso fue movido a WAITING por una interrupción
+                    if (next.getState() == ProcessState.WAITING || next.getState() == ProcessState.TERMINATED) {
+                        // El proceso fue interrumpido o terminado, salir del loop
+                        break;
+                    }
+                    if (next.getRemainingTime() > 0) {
+                        next.setRemainingTime(next.getRemainingTime() - 1);
+                        executed++;
+                    }
+                }
+            }
             
             synchronized (this) {
-                next.setState(ProcessState.TERMINATED);
-                next.setRemainingTime(0);
-                runningProcess = null;
-                terminatedQueue.add(next);
-                time += next.getBurstTime();
+                // Verificar el estado final del proceso
+                if (next.getState() == ProcessState.WAITING) {
+                    // El proceso fue interrumpido y está en WAITING
+                    runningProcess = null;
+                    time += executed;
+                    // El proceso ya está en waitingQueue, continuar con el siguiente
+                    continue;
+                } else {
+                    // Proceso terminado
+                    next.setState(ProcessState.TERMINATED);
+                    next.setRemainingTime(0);
+                    runningProcess = null;
+                    terminatedQueue.add(next);
+                    time += executed;
+                }
             }
         }
     }
@@ -522,23 +668,47 @@ public class ProcessSchedulerService {
 
         int time = 0;
         int index = 0;
-        while ((!queue.isEmpty() || index < sorted.size()) && !shouldStop.get()) {
+        while ((!queue.isEmpty() || index < sorted.size() || !waitingQueue.isEmpty() || !readyQueue.isEmpty()) && !shouldStop.get()) {
             // Agregar procesos que han llegado
             while (index < sorted.size() && sorted.get(index).getArrivalTime() <= time) {
                 ProcessControlBlock pcb = sorted.get(index);
-                pcb.setState(ProcessState.READY);
-                queue.offer(pcb);
+                synchronized (this) {
+                    if (pcb.getState() != ProcessState.TERMINATED && pcb.getState() != ProcessState.WAITING) {
+                        pcb.setState(ProcessState.READY);
+                        if (!queue.contains(pcb)) {
+                            queue.offer(pcb);
+                        }
+                    }
+                }
                 index++;
             }
             
-            if (queue.isEmpty()) {
-                if (index < sorted.size()) {
-                    int nextArrival = sorted.get(index).getArrivalTime();
-                    int waitTime = nextArrival - time;
-                    if (waitTime > 0) {
-                        sleepWithPause(waitTime * 1000L);
+            // Agregar procesos que volvieron de WAITING a READY
+            synchronized (this) {
+                List<ProcessControlBlock> readyFromWaiting = new ArrayList<>(readyQueue);
+                for (ProcessControlBlock p : readyFromWaiting) {
+                    if (p.getState() == ProcessState.READY && !queue.contains(p) && 
+                        p.getArrivalTime() <= time && p.getRemainingTime() > 0) {
+                        queue.offer(p);
                     }
-                    time = nextArrival;
+                }
+            }
+            
+            if (queue.isEmpty()) {
+                int nextTime = Integer.MAX_VALUE;
+                if (index < sorted.size()) {
+                    nextTime = Math.min(nextTime, sorted.get(index).getArrivalTime());
+                }
+                synchronized (this) {
+                    if (!waitingQueue.isEmpty()) {
+                        // Esperar hasta 6 segundos para que los procesos en WAITING puedan volver
+                        nextTime = Math.min(nextTime, time + 6);
+                    }
+                }
+                if (nextTime == Integer.MAX_VALUE) break;
+                if (nextTime > time) {
+                    sleepWithPause((nextTime - time) * 1000L);
+                    time = nextTime;
                 }
                 continue;
             }
@@ -554,25 +724,53 @@ public class ProcessSchedulerService {
                 timeline.add(new TimelineEntry(pcb.getPid(), pcb.getName(), start, start + slice, SchedulerAlgorithm.ROUND_ROBIN));
             }
             
-            // Esperar el tiempo del quantum
-            sleepWithPause(slice * 1000L);
+            // Esperar el tiempo del quantum, actualizando remainingTime cada segundo
+            int executedTime = 0;
+            for (int i = 0; i < slice && !shouldStop.get(); i++) {
+                sleepWithPause(1000L); // Esperar 1 segundo
+                synchronized (this) {
+                    // Verificar si el proceso fue movido a WAITING o TERMINATED por una interrupción
+                    if (pcb.getState() == ProcessState.WAITING || pcb.getState() == ProcessState.TERMINATED) {
+                        // El proceso fue interrumpido o terminado, salir del loop
+                        break;
+                    }
+                    if (pcb.getRemainingTime() > 0) {
+                        pcb.setRemainingTime(pcb.getRemainingTime() - 1);
+                        executedTime++;
+                    }
+                }
+            }
             
             synchronized (this) {
-                pcb.setRemainingTime(pcb.getRemainingTime() - slice);
-                time += slice;
+                time += executedTime;
                 
-                if (pcb.getRemainingTime() > 0) {
+                // Verificar el estado final del proceso
+                if (pcb.getState() == ProcessState.WAITING) {
+                    // El proceso fue interrumpido y está en WAITING
+                    runningProcess = null;
+                    // El proceso ya está en waitingQueue, continuar con el siguiente
+                } else if (pcb.getRemainingTime() > 0) {
+                    // El proceso aún tiene tiempo restante, volver a READY
                     pcb.setState(ProcessState.READY);
                     runningProcess = null;
                     // Agregar procesos que llegaron durante la ejecución
                     while (index < sorted.size() && sorted.get(index).getArrivalTime() <= time) {
                         ProcessControlBlock newPcb = sorted.get(index);
-                        newPcb.setState(ProcessState.READY);
-                        queue.offer(newPcb);
+                        synchronized (this) {
+                            if (newPcb.getState() != ProcessState.TERMINATED && newPcb.getState() != ProcessState.WAITING) {
+                                newPcb.setState(ProcessState.READY);
+                                if (!queue.contains(newPcb)) {
+                                    queue.offer(newPcb);
+                                }
+                            }
+                        }
                         index++;
                     }
-                    queue.offer(pcb);
+                    if (!queue.contains(pcb)) {
+                        queue.offer(pcb);
+                    }
                 } else {
+                    // Proceso terminado
                     pcb.setState(ProcessState.TERMINATED);
                     pcb.setRemainingTime(0);
                     runningProcess = null;

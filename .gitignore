@@ -1,0 +1,33 @@
+# Maven / Java
+backend/target/
+**/target/
+*.log
+*.iml
+*.class
+
+# Node / npm / Yarn / pnpm
+frontend/node_modules/
+**/node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+yarn.lock
+pnpm-lock.yaml
+
+# Vite / builds frontend
+frontend/dist/
+**/dist/
+.vite/
+
+# IDEs / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Sistema operativo / backup
+*.tmp
+*.bak
+*.orig

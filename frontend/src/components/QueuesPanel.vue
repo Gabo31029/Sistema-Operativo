@@ -47,7 +47,6 @@ defineProps({
   background: #fff;
   border-radius: 12px;
   padding: 1.5rem;
-  box-shadow: 0 2px 10px rgba(15, 23, 42, 0.08);
 }
 
 .queues {
