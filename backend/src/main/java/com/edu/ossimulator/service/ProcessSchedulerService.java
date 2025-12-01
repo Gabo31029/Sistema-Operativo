@@ -20,6 +20,7 @@ import com.edu.ossimulator.dto.TimelineEntry;
 import com.edu.ossimulator.model.ProcessControlBlock;
 import com.edu.ossimulator.model.ProcessState;
 import com.edu.ossimulator.model.SchedulerAlgorithm;
+import com.edu.ossimulator.service.MemoryManagerService;
 
 @Service
 public class ProcessSchedulerService {
@@ -29,6 +30,7 @@ public class ProcessSchedulerService {
     private final Deque<ProcessControlBlock> waitingQueue = new ArrayDeque<>();
     private final List<ProcessControlBlock> terminatedQueue = new ArrayList<>();
     private final List<TimelineEntry> timeline = new ArrayList<>();
+    private final MemoryManagerService memoryManagerService;
 
     private SimulationStatus status = SimulationStatus.IDLE;
     private ProcessControlBlock runningProcess;
@@ -38,6 +40,18 @@ public class ProcessSchedulerService {
     private final AtomicBoolean shouldStop = new AtomicBoolean(false);
     private final Object pauseLock = new Object();
     private boolean isPaused = false;
+    
+    // Configuración para interrupciones I/O automáticas
+    private double ioInterruptProbability = 0.3; // 30% de probabilidad de I/O durante ejecución
+    private int ioDurationSeconds = 3; // Duración de I/O en segundos
+    private boolean autoIOEnabled = true; // Habilitar I/O automático
+    
+    // Modo de operación: true = automático, false = manual
+    private boolean automaticMode = true;
+
+    public ProcessSchedulerService(MemoryManagerService memoryManagerService) {
+        this.memoryManagerService = memoryManagerService;
+    }
 
     public synchronized ProcessControlBlock createProcess(CreateProcessRequest request) {
         ProcessControlBlock pcb = new ProcessControlBlock(
@@ -47,13 +61,109 @@ public class ProcessSchedulerService {
                 Optional.ofNullable(request.getPriority()).orElse(1)
         );
         pcb.setState(ProcessState.READY);
+        
+        // Allocate memory if requested
+        if (request.getMemorySize() != null && request.getMemorySize() > 0) {
+            try {
+                Integer memoryAddress = memoryManagerService.allocateMemory(
+                        pcb.getPid(),
+                        request.getMemorySize(),
+                        null // Use current algorithm
+                );
+                if (memoryAddress != null) {
+                    pcb.setMemoryAddress(memoryAddress);
+                    pcb.setMemorySize(request.getMemorySize());
+                    pcb.appendHistory("Memory allocated at address " + memoryAddress);
+                }
+            } catch (Exception e) {
+                pcb.appendHistory("Memory allocation failed: " + e.getMessage());
+            }
+        }
+        
         processTable.add(pcb);
         readyQueue.add(pcb);
+        
+        // Auto-start simulation only if in automatic mode
+        if (automaticMode && status == SimulationStatus.IDLE && !readyQueue.isEmpty()) {
+            // Start with default algorithm (FCFS) or last used algorithm
+            // En modo automático, llamar directamente sin validación de modo
+            this.status = SimulationStatus.RUNNING;
+            this.shouldStop.set(false);
+            this.isPaused = false;
+            
+            List<ProcessControlBlock> workingSet = processTable.stream()
+                    .filter(p -> p.getState() != ProcessState.TERMINATED)
+                    .sorted(Comparator.comparingInt(ProcessControlBlock::getArrivalTime))
+                    .collect(Collectors.toList());
+
+            // Ejecutar la simulación en un hilo separado
+            simulationThread = new Thread(() -> {
+                try {
+                    switch (lastAlgorithm) {
+                        case FCFS -> runFcfsReal(workingSet);
+                        case ROUND_ROBIN -> runRoundRobinReal(workingSet, this.lastQuantum);
+                        case PRIORITY -> runPriorityReal(workingSet);
+                        case SJF -> runSjfReal(workingSet);
+                    }
+                    synchronized (this) {
+                        if (status != SimulationStatus.STOPPED) {
+                            // Si no hay procesos pero puede haber nuevos, mantener en IDLE para auto-inicio
+                            if (processTable.isEmpty() || processTable.stream().allMatch(p -> p.getState() == ProcessState.TERMINATED)) {
+                                this.status = SimulationStatus.IDLE;
+                            } else {
+                                this.status = SimulationStatus.COMPLETED;
+                                // Si hay procesos listos, reiniciar automáticamente
+                                if (!readyQueue.isEmpty() || !waitingQueue.isEmpty()) {
+                                    // Reiniciar con el mismo algoritmo
+                                    this.status = SimulationStatus.IDLE;
+                                    // Esto se manejará cuando se cree un nuevo proceso
+                                }
+                            }
+                        }
+                        runningProcess = null;
+                    }
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    synchronized (this) {
+                        this.status = SimulationStatus.STOPPED;
+                        runningProcess = null;
+                    }
+                }
+            });
+            
+            simulationThread.start();
+        }
+        
         return pcb;
     }
 
     public synchronized List<ProcessControlBlock> getProcessTable() {
         return new ArrayList<>(processTable);
+    }
+
+    public synchronized void clearAllProcesses() {
+        // Deallocate memory for all processes before clearing
+        for (ProcessControlBlock pcb : processTable) {
+            if (pcb.getMemoryAddress() != null && pcb.getMemorySize() != null) {
+                try {
+                    memoryManagerService.deallocateMemory(pcb.getPid());
+                } catch (Exception e) {
+                    // Ignore errors during cleanup
+                }
+            }
+        }
+        
+        processTable.clear();
+        readyQueue.clear();
+        waitingQueue.clear();
+        terminatedQueue.clear();
+        timeline.clear();
+        runningProcess = null;
+        status = SimulationStatus.IDLE;
+        if (simulationThread != null && simulationThread.isAlive()) {
+            shouldStop.set(true);
+            simulationThread.interrupt();
+        }
     }
 
     public synchronized SystemStateResponse getSystemState() {
@@ -73,9 +183,16 @@ public class ProcessSchedulerService {
     public synchronized void startSimulation(SimulationRequest request) {
         Assert.notNull(request.getAlgorithm(), "Algorithm is required");
         
-        // Si hay una simulación en curso, detenerla primero
-        if (status == SimulationStatus.RUNNING || status == SimulationStatus.PAUSED) {
-            stopSimulation();
+        // Si hay una simulación en curso, no reiniciarla si está corriendo
+        // Solo reiniciar si está pausada o detenida
+        if (status == SimulationStatus.PAUSED) {
+            resumeSimulation();
+            return;
+        }
+        
+        if (status == SimulationStatus.RUNNING) {
+            // Si ya está corriendo, no hacer nada (evitar reiniciar)
+            return;
         }
         
         this.status = SimulationStatus.RUNNING;
@@ -83,10 +200,20 @@ public class ProcessSchedulerService {
         this.lastQuantum = Optional.ofNullable(request.getQuantum()).orElse(lastQuantum);
         this.shouldStop.set(false);
         this.isPaused = false;
-        resetQueues();
-        timeline.clear();
+        
+        // No limpiar las colas si ya hay procesos ejecutándose
+        // Solo resetear si no hay nada corriendo
+        if (runningProcess == null && timeline.isEmpty()) {
+            resetQueues();
+        }
+        
+        // No limpiar timeline si ya hay entradas (continuar desde donde está)
+        if (timeline.isEmpty()) {
+            timeline.clear();
+        }
 
         List<ProcessControlBlock> workingSet = processTable.stream()
+                .filter(p -> p.getState() != ProcessState.TERMINATED)
                 .sorted(Comparator.comparingInt(ProcessControlBlock::getArrivalTime))
                 .collect(Collectors.toList());
 
@@ -118,6 +245,10 @@ public class ProcessSchedulerService {
     }
 
     public synchronized void pauseSimulation() {
+        // No permitir pausar en modo automático
+        if (automaticMode) {
+            return;
+        }
         if (status == SimulationStatus.RUNNING) {
             status = SimulationStatus.PAUSED;
             isPaused = true;
@@ -128,6 +259,10 @@ public class ProcessSchedulerService {
     }
 
     public synchronized void resumeSimulation() {
+        // No permitir reanudar en modo automático
+        if (automaticMode) {
+            return;
+        }
         if (status == SimulationStatus.PAUSED) {
             status = SimulationStatus.RUNNING;
             isPaused = false;
@@ -138,6 +273,10 @@ public class ProcessSchedulerService {
     }
 
     public synchronized void stopSimulation() {
+        // No permitir detener en modo automático
+        if (automaticMode) {
+            return;
+        }
         shouldStop.set(true);
         isPaused = false;
         status = SimulationStatus.STOPPED;
@@ -198,10 +337,10 @@ public class ProcessSchedulerService {
             runningProcess = null;
         }
         
-        // Programar que el proceso vuelva a READY después de 5 segundos (simulando I/O completado)
+        // Programar que el proceso vuelva a READY después de ioDurationSeconds (simulando I/O completado)
         new Thread(() -> {
             try {
-                Thread.sleep(5000); // Esperar 5 segundos para simular I/O
+                Thread.sleep(ioDurationSeconds * 1000L); // Esperar según duración configurada
                 synchronized (this) {
                     if (pcb.getState() == ProcessState.WAITING && !shouldStop.get()) {
                         moveToReady(pcb, "I/O completed");
@@ -219,6 +358,29 @@ public class ProcessSchedulerService {
         readyQueue.add(pcb);
         waitingQueue.remove(pcb);
     }
+    
+    public synchronized void setIOSettings(double probability, int duration, boolean enabled) {
+        this.ioInterruptProbability = Math.max(0.0, Math.min(1.0, probability));
+        this.ioDurationSeconds = Math.max(1, Math.min(10, duration));
+        this.autoIOEnabled = enabled;
+    }
+    
+    public synchronized void setAutomaticMode(boolean enabled) {
+        this.automaticMode = enabled;
+        // Si se cambia a modo manual y hay simulación corriendo, detenerla
+        if (!enabled && status == SimulationStatus.RUNNING) {
+            shouldStop.set(true);
+            status = SimulationStatus.STOPPED;
+            isPaused = false;
+            if (simulationThread != null && simulationThread.isAlive()) {
+                simulationThread.interrupt();
+            }
+        }
+    }
+    
+    public synchronized boolean isAutomaticMode() {
+        return automaticMode;
+    }
 
     private void moveToTerminated(ProcessControlBlock pcb, String reason) {
         updateState(pcb, ProcessState.TERMINATED, reason);
@@ -228,6 +390,16 @@ public class ProcessSchedulerService {
         readyQueue.remove(pcb);
         if (runningProcess == pcb) {
             runningProcess = null;
+        }
+        
+        // Deallocate memory when process terminates
+        if (pcb.getMemoryAddress() != null) {
+            try {
+                memoryManagerService.deallocateMemory(pcb.getPid());
+                pcb.appendHistory("Memory deallocated");
+            } catch (Exception e) {
+                pcb.appendHistory("Memory deallocation failed: " + e.getMessage());
+            }
         }
     }
 
@@ -317,6 +489,34 @@ public class ProcessSchedulerService {
                 }
             }
             
+            // Agregar nuevos procesos creados dinámicamente durante la simulación
+            synchronized (this) {
+                for (ProcessControlBlock newPcb : processTable) {
+                    if (newPcb.getState() == ProcessState.READY && 
+                        newPcb.getArrivalTime() <= time &&
+                        !allProcesses.contains(newPcb) &&
+                        !queue.contains(newPcb) &&
+                        newPcb.getRemainingTime() > 0) {
+                        allProcesses.add(newPcb);
+                        queue.offer(newPcb);
+                    }
+                }
+            }
+            
+            // Agregar nuevos procesos creados dinámicamente durante la simulación
+            synchronized (this) {
+                for (ProcessControlBlock newPcb : processTable) {
+                    if (newPcb.getState() == ProcessState.READY && 
+                        newPcb.getArrivalTime() <= time &&
+                        !allProcesses.contains(newPcb) &&
+                        !queue.contains(newPcb) &&
+                        newPcb.getRemainingTime() > 0) {
+                        allProcesses.add(newPcb);
+                        queue.offer(newPcb);
+                    }
+                }
+            }
+            
             // Agregar procesos que volvieron de WAITING a READY
             synchronized (this) {
                 List<ProcessControlBlock> readyFromWaiting = new ArrayList<>(readyQueue);
@@ -328,7 +528,7 @@ public class ProcessSchedulerService {
                 }
             }
             
-            // Si no hay procesos listos, esperar hasta el próximo evento
+            // Si no hay procesos listos, esperar hasta el próximo evento (pero nunca detenerse completamente)
             if (queue.isEmpty()) {
                 int nextTime = Integer.MAX_VALUE;
                 if (nextArrivalIndex < allProcesses.size()) {
@@ -337,11 +537,37 @@ public class ProcessSchedulerService {
                 // Verificar si hay procesos en WAITING que podrían volver pronto
                 synchronized (this) {
                     if (!waitingQueue.isEmpty()) {
-                        // Esperar un poco para que los procesos en WAITING puedan volver (máximo 6 segundos)
-                        nextTime = Math.min(nextTime, time + 6);
+                        // Esperar un poco para que los procesos en WAITING puedan volver
+                        nextTime = Math.min(nextTime, time + ioDurationSeconds + 1);
+                    }
+                    // Verificar si hay nuevos procesos en la tabla que aún no están en allProcesses
+                    for (ProcessControlBlock newPcb : processTable) {
+                        if (newPcb.getState() == ProcessState.READY && 
+                            newPcb.getArrivalTime() <= time &&
+                            !allProcesses.contains(newPcb)) {
+                            // Hay un nuevo proceso, agregarlo inmediatamente
+                            allProcesses.add(newPcb);
+                            queue.offer(newPcb);
+                            nextTime = time; // No esperar
+                            break;
+                        }
                     }
                 }
-                if (nextTime == Integer.MAX_VALUE) break;
+                if (nextTime == Integer.MAX_VALUE) {
+                    // No hay más procesos conocidos, esperar un poco y verificar nuevos procesos
+                    sleepWithPause(1000L); // Esperar 1 segundo
+                    synchronized (this) {
+                        // Verificar si hay nuevos procesos creados
+                        for (ProcessControlBlock newPcb : processTable) {
+                            if (newPcb.getState() == ProcessState.READY && 
+                                !allProcesses.contains(newPcb)) {
+                                allProcesses.add(newPcb);
+                                queue.offer(newPcb);
+                            }
+                        }
+                    }
+                    continue;
+                }
                 if (nextTime > time) {
                     sleepWithPause((nextTime - time) * 1000L);
                     time = nextTime;
@@ -488,6 +714,15 @@ public class ProcessSchedulerService {
                         // El proceso fue interrumpido o terminado, salir del loop
                         break;
                     }
+                    
+                    // Interrupción I/O automática (si está habilitada)
+                    if (autoIOEnabled && next.getState() == ProcessState.RUNNING && 
+                        Math.random() < ioInterruptProbability && executed > 0 && next.getRemainingTime() > 1) {
+                        // Generar interrupción I/O automática
+                        moveToWaiting(next, "Auto I/O interrupt (simulated)");
+                        break;
+                    }
+                    
                     if (next.getRemainingTime() > 0) {
                         next.setRemainingTime(next.getRemainingTime() - 1);
                         executed++;
@@ -595,6 +830,15 @@ public class ProcessSchedulerService {
                         // El proceso fue interrumpido o terminado, salir del loop
                         break;
                     }
+                    
+                    // Interrupción I/O automática (si está habilitada)
+                    if (autoIOEnabled && next.getState() == ProcessState.RUNNING && 
+                        Math.random() < ioInterruptProbability && executed > 0 && next.getRemainingTime() > 1) {
+                        // Generar interrupción I/O automática
+                        moveToWaiting(next, "Auto I/O interrupt (simulated)");
+                        break;
+                    }
+                    
                     if (next.getRemainingTime() > 0) {
                         next.setRemainingTime(next.getRemainingTime() - 1);
                         executed++;
@@ -681,6 +925,21 @@ public class ProcessSchedulerService {
                     }
                 }
                 index++;
+            }
+            
+            // Agregar nuevos procesos creados dinámicamente durante la simulación
+            synchronized (this) {
+                for (ProcessControlBlock newPcb : processTable) {
+                    if (newPcb.getState() == ProcessState.READY && 
+                        newPcb.getArrivalTime() <= time &&
+                        !sorted.contains(newPcb) &&
+                        !queue.contains(newPcb) &&
+                        newPcb.getRemainingTime() > 0) {
+                        sorted.add(newPcb);
+                        sorted.sort(Comparator.comparingInt(ProcessControlBlock::getArrivalTime));
+                        queue.offer(newPcb);
+                    }
+                }
             }
             
             // Agregar procesos que volvieron de WAITING a READY

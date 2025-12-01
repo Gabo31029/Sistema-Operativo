@@ -21,6 +21,9 @@ public class CreateProcessRequest {
     @Max(10)
     private Integer priority;
 
+    @Min(1)
+    private Integer memorySize;
+
     public String getName() {
         return name;
     }
@@ -51,6 +54,14 @@ public class CreateProcessRequest {
 
     public void setPriority(Integer priority) {
         this.priority = priority;
+    }
+
+    public Integer getMemorySize() {
+        return memorySize;
+    }
+
+    public void setMemorySize(Integer memorySize) {
+        this.memorySize = memorySize;
     }
 }
 

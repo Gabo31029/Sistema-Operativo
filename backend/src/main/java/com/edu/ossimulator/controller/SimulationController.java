@@ -55,5 +55,25 @@ public class SimulationController {
     public List<TimelineEntry> getTimeline() {
         return schedulerService.getTimeline();
     }
+
+    @PostMapping("/io-settings")
+    @ResponseStatus(HttpStatus.OK)
+    public void setIOSettings(@Valid @RequestBody com.edu.ossimulator.dto.IOSettingsRequest request) {
+        schedulerService.setIOSettings(request.getIoProbability(), request.getIoDurationSeconds(), request.isAutoIOEnabled());
+    }
+
+    @PostMapping("/mode")
+    @ResponseStatus(HttpStatus.OK)
+    public void setMode(@RequestBody java.util.Map<String, Boolean> request) {
+        Boolean automatic = request.get("automatic");
+        if (automatic != null) {
+            schedulerService.setAutomaticMode(automatic);
+        }
+    }
+
+    @GetMapping("/mode")
+    public java.util.Map<String, Boolean> getMode() {
+        return java.util.Map.of("automatic", schedulerService.isAutomaticMode());
+    }
 }
 

@@ -41,6 +41,11 @@ export const osApi = {
   listProcesses() {
     return request('/processes');
   },
+  clearAllProcesses() {
+    return request('/processes', {
+      method: 'DELETE',
+    });
+  },
   startSimulation(payload) {
     return request('/simulation/start', {
       method: 'POST',
@@ -67,6 +72,51 @@ export const osApi = {
       method: 'POST',
       body: JSON.stringify(payload),
     });
+  },
+  initializeMemory(totalSize) {
+    return request('/memory/initialize', {
+      method: 'POST',
+      body: JSON.stringify({ totalSize }),
+    });
+  },
+  allocateMemory(processId, size, algorithm) {
+    return request('/memory/allocate', {
+      method: 'POST',
+      body: JSON.stringify({ processId, size, algorithm }),
+    });
+  },
+  deallocateMemory(processId) {
+    return request(`/memory/deallocate/${processId}`, {
+      method: 'POST',
+    });
+  },
+  getMemoryState() {
+    return request('/memory/state');
+  },
+  setMemoryAlgorithm(algorithm) {
+    return request('/memory/algorithm', {
+      method: 'PUT',
+      body: JSON.stringify({ algorithm: algorithm }),
+    });
+  },
+  setIOSettings(ioProbability, ioDuration, autoIO) {
+    return request('/simulation/io-settings', {
+      method: 'POST',
+      body: JSON.stringify({
+        ioProbability,
+        ioDurationSeconds: ioDuration,
+        autoIOEnabled: autoIO,
+      }),
+    });
+  },
+  setMode(automatic) {
+    return request('/simulation/mode', {
+      method: 'POST',
+      body: JSON.stringify({ automatic }),
+    });
+  },
+  getMode() {
+    return request('/simulation/mode');
   },
 };
 

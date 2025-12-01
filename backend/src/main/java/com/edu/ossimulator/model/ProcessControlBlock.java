@@ -18,6 +18,8 @@ public class ProcessControlBlock {
     private int priority;
     private Instant createdAt;
     private final List<String> history = new ArrayList<>();
+    private Integer memoryAddress;
+    private Integer memorySize;
 
     public ProcessControlBlock(String name, int arrivalTime, int burstTime, int priority) {
         this.pid = PID_SEQUENCE.getAndIncrement();
@@ -104,6 +106,22 @@ public class ProcessControlBlock {
     public void resetRuntimeData() {
         this.remainingTime = this.burstTime;
         this.state = ProcessState.READY;
+    }
+
+    public Integer getMemoryAddress() {
+        return memoryAddress;
+    }
+
+    public void setMemoryAddress(Integer memoryAddress) {
+        this.memoryAddress = memoryAddress;
+    }
+
+    public Integer getMemorySize() {
+        return memorySize;
+    }
+
+    public void setMemorySize(Integer memorySize) {
+        this.memorySize = memorySize;
     }
 }
 

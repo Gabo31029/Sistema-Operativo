@@ -23,7 +23,9 @@ function handleSubmit() {
 
 <template>
   <section class="panel">
-    <h2>Interrupciones</h2>
+    <header>
+      <h2>Interrupciones</h2>
+    </header>
     <form class="form-grid" @submit.prevent="handleSubmit">
       <label>
         Proceso
@@ -47,7 +49,7 @@ function handleSubmit() {
         Motivo
         <input v-model="form.reason" required />
       </label>
-      <button type="submit">Emitir</button>
+      <button type="submit" class="submit-btn">📤 Emitir</button>
     </form>
   </section>
 </template>
@@ -60,44 +62,79 @@ function handleSubmit() {
   display: flex;
   flex-direction: column;
   gap: 1rem;
+  height: 100%;
+}
+
+header {
+  margin-bottom: 0.5rem;
+  padding-bottom: 0.75rem;
+  border-bottom: 2px solid #e5e7eb;
+}
+
+header h2 {
+  margin: 0;
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: #1f2937;
 }
 
 .form-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-  gap: 0.75rem;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 0.85rem;
+  align-items: end;
 }
 
 label {
   font-size: 0.85rem;
   font-weight: 600;
-  color: #0f172a;
+  color: #374151;
   display: flex;
   flex-direction: column;
-  gap: 0.25rem;
+  gap: 0.4rem;
 }
 
 select,
 input {
-  border: 1px solid #d7dfe9;
+  border: 1px solid #d1d5db;
   border-radius: 6px;
-  padding: 0.45rem 0.65rem;
+  padding: 0.5rem 0.75rem;
   font-size: 0.9rem;
+  transition: border-color 0.2s;
+}
+
+select:focus,
+input:focus {
+  outline: none;
+  border-color: #047857;
+  box-shadow: 0 0 0 3px rgba(4, 120, 87, 0.1);
 }
 
 .reason {
   grid-column: span 2;
 }
 
-button {
+.submit-btn {
   border: none;
   border-radius: 6px;
-  padding: 0.55rem 0.9rem;
+  padding: 0.6rem 1.2rem;
   font-weight: 600;
   cursor: pointer;
   background: #047857;
   color: #fff;
-  font-size: 0.95rem;
+  font-size: 0.9rem;
+  transition: all 0.2s;
+  grid-column: span 2;
+  justify-self: start;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.submit-btn:hover {
+  background: #065f46;
+  transform: translateY(-1px);
+  box-shadow: 0 2px 4px rgba(4, 120, 87, 0.2);
 }
 </style>
 

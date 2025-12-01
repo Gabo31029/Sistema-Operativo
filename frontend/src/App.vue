@@ -6,6 +6,7 @@ import QueuesPanel from './components/QueuesPanel.vue'
 import TimelineChart from './components/TimelineChart.vue'
 import ControlPanel from './components/ControlPanel.vue'
 import InterruptionPanel from './components/InterruptionPanel.vue'
+import MemoryPanel from './components/MemoryPanel.vue'
 import { osApi } from './services/api'
 
 const processes = ref([])
@@ -19,8 +20,23 @@ const systemState = ref({
 })
 const algorithm = ref('FCFS')
 const quantum = ref(2)
+const ioProbability = ref(0.3)
+const ioDuration = ref(3)
+const autoIO = ref(true)
+const automaticMode = ref(true)
 const loading = ref(false)
 const errorMessage = ref('')
+const memoryState = ref({
+  blocks: [],
+  totalSize: 1024,
+  usedSize: 0,
+  freeSize: 1024,
+  internalFragmentation: 0,
+  externalFragmentation: 0,
+  currentAlgorithm: 'FIRST_FIT',
+  segments: [],
+})
+const memoryExpanded = ref(true) // Siempre expandido - gestión automática
 
 const queueSummary = computed(() => ({
   total: processes.value.length,
@@ -50,16 +66,30 @@ async function safeCall(callback) {
   }
 }
 
+async function refreshMemory() {
+  try {
+    const state = await osApi.getMemoryState()
+    memoryState.value = state
+  } catch (error) {
+    // Silently fail for memory state
+    console.error('Failed to refresh memory state:', error)
+  }
+}
+
 async function refreshAll() {
   try {
-    const [proc, state, time] = await Promise.all([
+    const [proc, state, time, mem] = await Promise.all([
       osApi.listProcesses(),
       osApi.getSystemState(),
       osApi.getTimeline(),
+      osApi.getMemoryState().catch(() => null),
     ])
     processes.value = proc
     systemState.value = state
     timeline.value = time
+    if (mem) {
+      memoryState.value = mem
+    }
   } catch (error) {
     errorMessage.value = error.message
   }
@@ -104,6 +134,77 @@ async function handleInterruption(payload) {
   })
 }
 
+async function handleMemoryInitialize(totalSize) {
+  await safeCall(async () => {
+    await osApi.initializeMemory(totalSize)
+    await refreshAll()
+  })
+}
+
+async function handleMemoryAllocate(payload) {
+  await safeCall(async () => {
+    await osApi.allocateMemory(payload.processId, payload.size, payload.algorithm)
+    await refreshAll()
+  })
+}
+
+async function handleMemoryDeallocate(processId) {
+  await safeCall(async () => {
+    await osApi.deallocateMemory(processId)
+    await refreshAll()
+  })
+}
+
+async function handleMemoryAlgorithmChange(algorithm) {
+  await safeCall(async () => {
+    await osApi.setMemoryAlgorithm(algorithm)
+    await refreshAll()
+  })
+}
+
+function openWebApp() {
+  window.open('http://localhost:3000', '_blank')
+}
+
+async function handleIOProbabilityChange(value) {
+  ioProbability.value = value
+  await safeCall(async () => {
+    await osApi.setIOSettings(ioProbability.value, ioDuration.value, autoIO.value)
+  })
+}
+
+async function handleIODurationChange(value) {
+  ioDuration.value = value
+  await safeCall(async () => {
+    await osApi.setIOSettings(ioProbability.value, ioDuration.value, autoIO.value)
+  })
+}
+
+async function handleAutoIOChange(value) {
+  autoIO.value = value
+  await safeCall(async () => {
+    await osApi.setIOSettings(ioProbability.value, ioDuration.value, autoIO.value)
+  })
+}
+
+async function handleAutomaticModeChange(value) {
+  automaticMode.value = value
+  await safeCall(async () => {
+    await osApi.setMode(value)
+    await refreshAll()
+  })
+}
+
+async function handleClearAll() {
+  if (!confirm('¿Estás seguro de que quieres eliminar todos los procesos? Esta acción no se puede deshacer.')) {
+    return
+  }
+  await safeCall(async () => {
+    await osApi.clearAllProcesses()
+    await refreshAll()
+  })
+}
+
 let refreshInterval
 
 function setupRefreshInterval() {
@@ -112,13 +213,26 @@ function setupRefreshInterval() {
     clearInterval(refreshInterval)
   }
   
-  // Actualizar cada 1 segundo (1000ms)
-  refreshInterval = setInterval(refreshAll, 1000)
+  // Actualizar cada 500ms para actualización en tiempo real más fluida
+  refreshInterval = setInterval(() => {
+    refreshAll()
+    refreshMemory() // Actualizar memoria también
+  }, 500)
 }
 
-onMounted(() => {
+onMounted(async () => {
   refreshAll()
   setupRefreshInterval()
+  
+  // Cargar modo actual del backend
+  try {
+    const mode = await osApi.getMode()
+    if (mode && mode.automatic !== undefined) {
+      automaticMode.value = mode.automatic
+    }
+  } catch (error) {
+    console.error('Error loading mode:', error)
+  }
   
   // Observar cambios en el estado para ajustar el intervalo
   watch(() => systemState.value.status, () => {
@@ -136,7 +250,15 @@ onUnmounted(() => {
 <template>
   <main class="workspace">
     <header class="strip">
-        <h1 class="sim">Simulador de un SO</h1>
+        <div>
+          <h1 class="sim">Panel de Control del Sistema Operativo</h1>
+          <p class="subtitle-header">Monitoreando procesos en tiempo real desde aplicaciones web</p>
+        </div>
+        <div class="header-actions">
+          <button class="btn-external" @click="openWebApp" title="Abrir aplicación web paralela">
+            🌐 Aplicación Web
+          </button>
+        </div>
     </header>
 
     <section class="summary-strip">
@@ -163,26 +285,34 @@ onUnmounted(() => {
         <ProcessForm @submit="handleCreateProcess" />
       </article>
 
-      <article class="card control-card">
-        <ControlPanel
-          :algorithm="algorithm"
-          :quantum="quantum"
-          :status="systemState.status"
-          @update:algorithm="algorithm = $event"
-          @update:quantum="quantum = $event"
-          @start="handleSimulation('start')"
-          @pause="handleSimulation('pause')"
-          @resume="handleSimulation('resume')"
-          @stop="handleSimulation('stop')"
-        />
-      </article>
+          <article class="card control-card">
+            <ControlPanel
+              :algorithm="algorithm"
+              :quantum="quantum"
+              :status="systemState.status"
+              :io-probability="ioProbability"
+              :io-duration="ioDuration"
+              :auto-i-o="autoIO"
+              :automatic-mode="automaticMode"
+              @update:algorithm="algorithm = $event"
+              @update:quantum="quantum = $event"
+              @update:io-probability="handleIOProbabilityChange"
+              @update:io-duration="handleIODurationChange"
+              @update:auto-i-o="handleAutoIOChange"
+              @update:automatic-mode="handleAutomaticModeChange"
+              @start="handleSimulation('start')"
+              @pause="handleSimulation('pause')"
+              @resume="handleSimulation('resume')"
+              @stop="handleSimulation('stop')"
+            />
+          </article>
 
       <article class="card interrupt-card">
         <InterruptionPanel :processes="processes" @submit="handleInterruption" />
       </article>
 
       <article class="card table-card">
-        <ProcessTable :processes="processes" />
+        <ProcessTable :processes="processes" @clear-all="handleClearAll" />
       </article>
 
       <article class="card timeline-card">
@@ -191,6 +321,20 @@ onUnmounted(() => {
 
       <article class="card queues-card">
         <QueuesPanel :state="systemState" />
+      </article>
+
+      <article class="card memory-card">
+        <MemoryPanel
+          :memory-state="memoryState"
+          :expanded="memoryExpanded"
+          :processes="processes"
+          @expand="memoryExpanded = true"
+          @collapse="memoryExpanded = false"
+          @initialize="handleMemoryInitialize"
+          @allocate="handleMemoryAllocate"
+          @deallocate="handleMemoryDeallocate"
+          @change-algorithm="handleMemoryAlgorithmChange"
+        />
       </article>
     </section>
 
