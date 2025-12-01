@@ -15,6 +15,9 @@ import java.util.stream.Collectors;
 @Service
 public class MemoryManagerService {
 
+    // Tamaño fijo de bloque en KB (32KB) para cumplir el requerimiento de bloques 2^n
+    private static final int BLOCK_SIZE_KB = 32;
+
     private final List<MemoryBlock> memoryBlocks = new ArrayList<>();
     private final List<MemorySegment> segments = new ArrayList<>();
     private int totalMemorySize = 1024; // Default 1024 KB
@@ -26,11 +29,18 @@ public class MemoryManagerService {
     public synchronized void initializeMemory(int totalSize) {
         memoryBlocks.clear();
         segments.clear();
-        this.totalMemorySize = totalSize;
+
+        // Ajustar el tamaño total a múltiplo de BLOCK_SIZE_KB (32KB)
+        int blocks = totalSize / BLOCK_SIZE_KB;
+        if (blocks <= 0) {
+            throw new IllegalArgumentException("Total memory size must be at least " + BLOCK_SIZE_KB + " KB");
+        }
+        this.totalMemorySize = blocks * BLOCK_SIZE_KB;
+
         MemoryBlock initialBlock = new MemoryBlock(
                 blockIdSequence.getAndIncrement(),
                 0,
-                totalSize,
+                this.totalMemorySize,
                 false,
                 null
         );
@@ -43,37 +53,49 @@ public class MemoryManagerService {
             initializeMemory(totalMemorySize);
         }
 
-        if (size > totalMemorySize) {
+        if (size <= 0) {
+            throw new IllegalArgumentException("Requested size must be greater than 0");
+        }
+
+        // Tamaño lógico solicitado por el proceso (en KB)
+        int requestedSize = size;
+
+        // Redondear al tamaño de bloque fijo (32KB)
+        int requiredBlocks = (int) Math.ceil(requestedSize / (double) BLOCK_SIZE_KB);
+        int roundedSize = requiredBlocks * BLOCK_SIZE_KB;
+
+        if (roundedSize > totalMemorySize) {
             throw new IllegalArgumentException("Requested size exceeds total memory");
         }
 
         MemoryAllocationAlgorithm algo = algorithm != null ? algorithm : currentAlgorithm;
 
         Integer address = switch (algo) {
-            case FIRST_FIT -> allocateFirstFit(size);
-            case BEST_FIT -> allocateBestFit(size);
-            case WORST_FIT -> allocateWorstFit(size);
-            case SEGMENTATION -> allocateSegmentation(processId, size);
+            case FIRST_FIT -> allocateFirstFit(roundedSize);
+            case BEST_FIT -> allocateBestFit(roundedSize);
+            case WORST_FIT -> allocateWorstFit(roundedSize);
+            case SEGMENTATION -> allocateSegmentation(processId, roundedSize);
         };
 
         if (address != null) {
             // Update block to mark as allocated
             for (MemoryBlock block : memoryBlocks) {
                 if (block.getBaseAddress() == address && !block.isAllocated()) {
-                    if (block.getSize() > size) {
+                    if (block.getSize() > roundedSize) {
                         // Split block: create new free block for remaining space
                         MemoryBlock remaining = new MemoryBlock(
                                 blockIdSequence.getAndIncrement(),
-                                address + size,
-                                block.getSize() - size,
+                                address + roundedSize,
+                                block.getSize() - roundedSize,
                                 false,
                                 null
                         );
                         memoryBlocks.add(remaining);
                     }
-                    block.setSize(size);
+                    block.setSize(roundedSize);
                     block.setAllocated(true);
                     block.setProcessId(processId);
+                    block.setRequestedSize(requestedSize);
                     break;
                 }
             }
@@ -156,6 +178,7 @@ public class MemoryManagerService {
             if (block.isAllocated() && block.getProcessId() != null && block.getProcessId().equals(processId)) {
                 block.setAllocated(false);
                 block.setProcessId(null);
+                block.setRequestedSize(0);
             }
         }
 
@@ -211,23 +234,33 @@ public class MemoryManagerService {
             initializeMemory(totalMemorySize);
         }
 
-        int usedSize = memoryBlocks.stream()
+        // Tamaño físico total reservado (múltiplos de 32KB)
+        int physicalUsedSize = memoryBlocks.stream()
                 .filter(MemoryBlock::isAllocated)
                 .mapToInt(MemoryBlock::getSize)
                 .sum();
 
-        int freeSize = totalMemorySize - usedSize;
+        // Tamaño lógico total solicitado por los procesos
+        int requestedTotal = memoryBlocks.stream()
+                .filter(MemoryBlock::isAllocated)
+                .mapToInt(MemoryBlock::getRequestedSize) // tamaño lógico solicitado
+                .sum();
 
-        // Internal fragmentation: difference between allocated block size and actual used size
-        // For simplicity, we'll track this by storing requested size separately
-        // For now, assume minimal fragmentation (could be enhanced with a map)
-        int internalFragmentation = 0;
+        // Memoria libre física (no reservada por ningún bloque)
+        int freeSize = totalMemorySize - physicalUsedSize;
+
+        // Fragmentación interna: diferencia entre tamaño reservado y solicitado
+        int internalFragmentation = Math.max(0, physicalUsedSize - requestedTotal);
 
         int externalFragmentation = memoryBlocks.stream()
                 .filter(b -> !b.isAllocated())
                 .filter(b -> b.getSize() < totalMemorySize * 0.1) // Blocks < 10% of total
                 .mapToInt(MemoryBlock::getSize)
                 .sum();
+
+        // usedSize en la respuesta debe representar la memoria REQUERIDA por los procesos,
+        // no la físicamente reservada (para que coincida con la suma ejecutable+datos+variable).
+        int usedSize = requestedTotal;
 
         return new MemoryStateResponse(
                 new ArrayList<>(memoryBlocks),

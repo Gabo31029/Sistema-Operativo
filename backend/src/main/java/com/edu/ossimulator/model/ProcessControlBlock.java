@@ -20,6 +20,10 @@ public class ProcessControlBlock {
     private final List<String> history = new ArrayList<>();
     private Integer memoryAddress;
     private Integer memorySize;
+    // Desglose de memoria del proceso (en KB)
+    private Integer executableSize;
+    private Integer dataSize;
+    private Integer variableSize;
 
     public ProcessControlBlock(String name, int arrivalTime, int burstTime, int priority) {
         this.pid = PID_SEQUENCE.getAndIncrement();
@@ -122,6 +126,30 @@ public class ProcessControlBlock {
 
     public void setMemorySize(Integer memorySize) {
         this.memorySize = memorySize;
+    }
+
+    public Integer getExecutableSize() {
+        return executableSize;
+    }
+
+    public void setExecutableSize(Integer executableSize) {
+        this.executableSize = executableSize;
+    }
+
+    public Integer getDataSize() {
+        return dataSize;
+    }
+
+    public void setDataSize(Integer dataSize) {
+        this.dataSize = dataSize;
+    }
+
+    public Integer getVariableSize() {
+        return variableSize;
+    }
+
+    public void setVariableSize(Integer variableSize) {
+        this.variableSize = variableSize;
     }
 }
 

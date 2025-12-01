@@ -49,6 +49,14 @@ public class ProcessSchedulerService {
     // Modo de operación: true = automático, false = manual
     private boolean automaticMode = true;
 
+    // Porcentaje de memoria para segmento de datos y memoria variable
+    // respecto al tamaño del ejecutable.
+    // Configuración actual: 25% datos, 25% memoria variable.
+    private static final double DATA_SEGMENT_PERCENT = 0.25;
+    private static final double VARIABLE_MEMORY_PERCENT = 0.25;
+    // Tamaño por defecto del ejecutable (en KB) cuando no se especifica memorySize
+    private static final int DEFAULT_EXECUTABLE_SIZE_KB = 64;
+
     public ProcessSchedulerService(MemoryManagerService memoryManagerService) {
         this.memoryManagerService = memoryManagerService;
     }
@@ -62,22 +70,37 @@ public class ProcessSchedulerService {
         );
         pcb.setState(ProcessState.READY);
         
-        // Allocate memory if requested
-        if (request.getMemorySize() != null && request.getMemorySize() > 0) {
-            try {
-                Integer memoryAddress = memoryManagerService.allocateMemory(
-                        pcb.getPid(),
-                        request.getMemorySize(),
-                        null // Use current algorithm
-                );
-                if (memoryAddress != null) {
-                    pcb.setMemoryAddress(memoryAddress);
-                    pcb.setMemorySize(request.getMemorySize());
-                    pcb.appendHistory("Memory allocated at address " + memoryAddress);
-                }
-            } catch (Exception e) {
-                pcb.appendHistory("Memory allocation failed: " + e.getMessage());
+        // Asignación de memoria para el proceso
+        try {
+            // Interpretar memorySize como tamaño del ejecutable (en KB).
+            // Si no se proporciona, usar un tamaño por defecto.
+            int executableSize = Optional.ofNullable(request.getMemorySize())
+                    .filter(size -> size > 0)
+                    .orElse(DEFAULT_EXECUTABLE_SIZE_KB);
+
+            int dataSize = (int) Math.ceil(executableSize * DATA_SEGMENT_PERCENT);
+            int variableSize = (int) Math.ceil(executableSize * VARIABLE_MEMORY_PERCENT);
+            int totalProcessMemory = executableSize + dataSize + variableSize;
+
+            Integer memoryAddress = memoryManagerService.allocateMemory(
+                    pcb.getPid(),
+                    totalProcessMemory,
+                    null // Usar algoritmo actual
+            );
+            if (memoryAddress != null) {
+                pcb.setMemoryAddress(memoryAddress);
+                pcb.setExecutableSize(executableSize);
+                pcb.setDataSize(dataSize);
+                pcb.setVariableSize(variableSize);
+                pcb.setMemorySize(totalProcessMemory);
+                pcb.appendHistory("Memory allocated at address " + memoryAddress +
+                        " (exe=" + executableSize + "KB, data=" + dataSize +
+                        "KB, var=" + variableSize + "KB)");
+            } else {
+                pcb.appendHistory("Memory allocation failed: no suitable block found");
             }
+        } catch (Exception e) {
+            pcb.appendHistory("Memory allocation failed: " + e.getMessage());
         }
         
         processTable.add(pcb);
@@ -378,7 +401,9 @@ public class ProcessSchedulerService {
     }
     
     public synchronized void setAutomaticMode(boolean enabled) {
+        boolean wasAutomatic = this.automaticMode;
         this.automaticMode = enabled;
+
         // Si se cambia a modo manual y hay simulación corriendo, detenerla
         if (!enabled && status == SimulationStatus.RUNNING) {
             shouldStop.set(true);
@@ -386,6 +411,56 @@ public class ProcessSchedulerService {
             isPaused = false;
             if (simulationThread != null && simulationThread.isAlive()) {
                 simulationThread.interrupt();
+            }
+            return;
+        }
+
+        // Si se cambia de manual -> automático y hay procesos listos, arrancar simulación automática
+        if (enabled && !wasAutomatic) {
+            boolean hasReadyProcesses = processTable.stream()
+                    .anyMatch(p -> p.getState() != ProcessState.TERMINATED);
+
+            if (hasReadyProcesses && status != SimulationStatus.RUNNING) {
+                this.status = SimulationStatus.RUNNING;
+                this.shouldStop.set(false);
+                this.isPaused = false;
+
+                List<ProcessControlBlock> workingSet = processTable.stream()
+                        .filter(p -> p.getState() != ProcessState.TERMINATED)
+                        .sorted(Comparator.comparingInt(ProcessControlBlock::getArrivalTime))
+                        .collect(Collectors.toList());
+
+                simulationThread = new Thread(() -> {
+                    try {
+                        switch (lastAlgorithm) {
+                            case FCFS -> runFcfsReal(workingSet);
+                            case ROUND_ROBIN -> runRoundRobinReal(workingSet, this.lastQuantum);
+                            case PRIORITY -> runPriorityReal(workingSet);
+                            case SJF -> runSjfReal(workingSet);
+                        }
+                        synchronized (this) {
+                            if (status != SimulationStatus.STOPPED) {
+                                if (processTable.isEmpty() || processTable.stream().allMatch(p -> p.getState() == ProcessState.TERMINATED)) {
+                                    this.status = SimulationStatus.IDLE;
+                                } else {
+                                    this.status = SimulationStatus.COMPLETED;
+                                    if (!readyQueue.isEmpty() || !waitingQueue.isEmpty()) {
+                                        this.status = SimulationStatus.IDLE;
+                                    }
+                                }
+                            }
+                            runningProcess = null;
+                        }
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        synchronized (this) {
+                            this.status = SimulationStatus.STOPPED;
+                            runningProcess = null;
+                        }
+                    }
+                });
+
+                simulationThread.start();
             }
         }
     }
@@ -628,19 +703,17 @@ public class ProcessSchedulerService {
                     // El proceso ya está en waitingQueue, continuar con el siguiente
                     continue;
                 } else if (pcb.getRemainingTime() <= 0 || pcb.getState() == ProcessState.TERMINATED) {
-                    // Proceso terminado
-                    pcb.setState(ProcessState.TERMINATED);
+                    // Proceso terminado: usar flujo centralizado (libera memoria, mueve colas)
                     pcb.setRemainingTime(0);
                     runningProcess = null;
-                    terminatedQueue.add(pcb);
                     time += executed;
+                    moveToTerminated(pcb, "Process completed (FCFS)");
                 } else {
-                    // Esto no debería pasar, pero por seguridad
-                    pcb.setState(ProcessState.TERMINATED);
+                    // Caso inesperado: forzar terminación segura
                     pcb.setRemainingTime(0);
                     runningProcess = null;
-                    terminatedQueue.add(pcb);
                     time += executed;
+                    moveToTerminated(pcb, "Process forcefully terminated (FCFS)");
                 }
             }
         }
@@ -751,12 +824,11 @@ public class ProcessSchedulerService {
                     // El proceso ya está en waitingQueue, continuar con el siguiente
                     continue;
                 } else {
-                    // Proceso terminado
-                    next.setState(ProcessState.TERMINATED);
+                    // Proceso terminado: usar flujo centralizado
                     next.setRemainingTime(0);
                     runningProcess = null;
-                    terminatedQueue.add(next);
                     time += executed;
+                    moveToTerminated(next, "Process completed (PRIORITY)");
                 }
             }
         }
@@ -867,12 +939,11 @@ public class ProcessSchedulerService {
                     // El proceso ya está en waitingQueue, continuar con el siguiente
                     continue;
                 } else {
-                    // Proceso terminado
-                    next.setState(ProcessState.TERMINATED);
+                    // Proceso terminado: usar flujo centralizado
                     next.setRemainingTime(0);
                     runningProcess = null;
-                    terminatedQueue.add(next);
                     time += executed;
+                    moveToTerminated(next, "Process completed (SJF)");
                 }
             }
         }
@@ -1041,11 +1112,10 @@ public class ProcessSchedulerService {
                         queue.offer(pcb);
                     }
                 } else {
-                    // Proceso terminado
-                    pcb.setState(ProcessState.TERMINATED);
+                    // Proceso terminado: usar flujo centralizado
                     pcb.setRemainingTime(0);
                     runningProcess = null;
-                    terminatedQueue.add(pcb);
+                    moveToTerminated(pcb, "Process completed (ROUND_ROBIN)");
                 }
             }
         }

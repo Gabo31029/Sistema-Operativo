@@ -111,24 +111,79 @@ function getBlockBackgroundColor(pid) {
   return `rgba(${r}, ${g}, ${b}, 0.1)`
 }
 
-// Función para obtener el estilo completo del bloque
-function getBlockStyle(block) {
-  const width = `${(block.size / props.memoryState.totalSize) * 100}%`
-  
-  // Determinar el color de fondo
-  let backgroundColor = '#10b981' // Verde por defecto (bloques libres)
-  
-  if (block.isAllocated && block.processId) {
-    // Bloque asignado a un proceso - usar color del proceso
-    backgroundColor = getProcessColor(block.processId)
-  } else if (block.isAllocated && !block.processId) {
-    // Bloque asignado pero sin processId (caso especial)
-    backgroundColor = '#3b82f6' // Azul por defecto
+// Tamaño fijo de bloque en KB (debe coincidir con el backend)
+const BLOCK_SIZE_KB = 32
+
+// Número total de celdas físicas (bloques de 32KB)
+const totalCells = computed(() => {
+  if (!props.memoryState.totalSize || props.memoryState.totalSize <= 0) return 0
+  return Math.max(1, Math.floor(props.memoryState.totalSize / BLOCK_SIZE_KB))
+})
+
+// Buscar el bloque de memoria que cubre una dirección base concreta
+function findBlockForAddress(address) {
+  return props.memoryState.blocks?.find((block) => {
+    const start = block.baseAddress
+    const end = block.baseAddress + block.size
+    return address >= start && address < end
+  })
+}
+
+// Estilo visual de cada celda de 32KB en la barra de memoria
+function getCellStyle(cellIndex) {
+  const cellStart = cellIndex * BLOCK_SIZE_KB
+  const cellEnd = cellStart + BLOCK_SIZE_KB
+
+  const baseStyle = {
+    borderRight: '1px solid rgba(148, 163, 184, 0.5)',
   }
-  
+
+  const block = findBlockForAddress(cellStart)
+
+  // Celda completamente libre (sin bloque asignado)
+  if (!block || !block.allocated || !block.processId) {
+    return {
+      ...baseStyle,
+      backgroundColor: '#ffffff',
+    }
+  }
+
+  const color = getProcessColor(block.processId)
+
+  // requestedSize puede ser menor que el tamaño reservado para este bloque.
+  // Si no viene informado o es 0 (bloques antiguos), usar size completo.
+  const requestedSize =
+    block.requestedSize && block.requestedSize > 0
+      ? block.requestedSize
+      : block.size
+  const requestedEnd = block.baseAddress + requestedSize
+
+  // Si la parte usada del bloque termina antes de esta celda → celda vacía (desperdicio)
+  if (requestedEnd <= cellStart) {
+    return {
+      ...baseStyle,
+      backgroundColor: '#ffffff',
+    }
+  }
+
+  // Si la parte usada cubre toda la celda → celda llena del color del proceso
+  if (requestedEnd >= cellEnd) {
+    return {
+      ...baseStyle,
+      backgroundColor: color,
+    }
+  }
+
+  // Celda parcialmente utilizada: parte del color del proceso, parte blanca
+  const usedInCell = Math.max(0, requestedEnd - cellStart)
+  const usedPercent = Math.max(
+    0,
+    Math.min(100, (usedInCell / BLOCK_SIZE_KB) * 100)
+  )
+
   return {
-    width: width,
-    backgroundColor: backgroundColor,
+    ...baseStyle,
+    backgroundImage: `linear-gradient(to right, ${color} 0%, ${color} ${usedPercent}%, #ffffff ${usedPercent}%, #ffffff 100%)`,
   }
 }
 </script>
@@ -186,19 +241,12 @@ function getBlockStyle(block) {
 
       <div class="memory-visualization">
         <div
-          v-for="block in memoryState.blocks"
-          :key="block.id"
-          class="memory-block"
-          :class="{
-            'block-allocated': block.isAllocated,
-            'block-free': !block.isAllocated,
-          }"
-          :style="getBlockStyle(block)"
-          :data-process-id="block.processId || null"
-          :title="`${block.isAllocated ? 'Asignado' : 'Libre'}: ${block.size} KB @ ${block.baseAddress}${block.processId ? ' (PID: ' + block.processId + ')' : ''}`"
-        >
-          <span class="block-label">{{ block.size }} KB</span>
-        </div>
+          v-for="cellIndex in totalCells"
+          :key="cellIndex"
+          class="memory-cell"
+          :style="getCellStyle(cellIndex - 1)"
+          :title="`${(cellIndex - 1) * BLOCK_SIZE_KB} KB - ${cellIndex * BLOCK_SIZE_KB} KB`"
+        ></div>
       </div>
 
       <table class="memory-table">
@@ -215,27 +263,37 @@ function getBlockStyle(block) {
             v-for="block in memoryState.blocks" 
             :key="block.id"
             :style="{
-              backgroundColor: block.isAllocated && block.processId 
+              backgroundColor: block.allocated && block.processId 
                 ? getBlockBackgroundColor(block.processId) 
                 : 'transparent',
-              borderLeft: block.isAllocated && block.processId 
+              borderLeft: block.allocated && block.processId 
                 ? `3px solid ${getProcessColor(block.processId)}` 
                 : 'none',
             }"
             class="memory-row"
           >
             <td>{{ block.baseAddress }}</td>
-            <td>{{ block.size }} KB</td>
+            <td>
+              <span
+                :title="block.allocated && block.requestedSize ? `Lógico: ${block.requestedSize} KB / Físico: ${block.size} KB` : `Físico: ${block.size} KB`"
+              >
+                {{
+                  block.allocated && block.requestedSize && block.requestedSize > 0
+                    ? block.requestedSize
+                    : block.size
+                }} KB
+              </span>
+            </td>
             <td>
               <span 
                 class="block-status"
                 :style="{
-                  color: block.isAllocated && block.processId 
+                  color: block.allocated && block.processId 
                     ? getProcessColor(block.processId) 
                     : '#10b981',
                 }"
               >
-                {{ block.isAllocated ? 'Asignado' : 'Libre' }}
+                {{ block.allocated ? 'Asignado' : 'Libre' }}
               </span>
             </td>
             <td>
@@ -379,48 +437,16 @@ function getBlockStyle(block) {
   height: 60px;
   border: 2px solid #e5e7eb;
   border-radius: 4px;
-  overflow-x: auto;
-  overflow-y: hidden;
+  overflow: hidden;
   background: #f9fafb;
-  -webkit-overflow-scrolling: touch;
   box-sizing: border-box;
 }
 
-@media (max-width: 480px) {
-  .memory-visualization {
-    height: 50px;
-  }
-  
-  .block-label {
-    font-size: 0.65rem;
-  }
-}
-
-.memory-block {
+.memory-cell {
+  flex: 1;
+  min-width: 0;
   height: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-right: 1px solid rgba(0, 0, 0, 0.1);
-  transition: opacity 0.2s;
-  min-width: 40px;
-}
-
-/* Los colores se aplican dinámicamente via :style */
-.block-free {
-  /* El color verde se aplica via :style para bloques libres */
-}
-
-.block-allocated {
-  /* El color se aplica dinámicamente via :style según el PID del proceso */
-  /* No establecer background aquí para permitir que el estilo inline tenga prioridad */
-}
-
-.block-label {
-  font-size: 0.7rem;
-  color: white;
-  font-weight: 600;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+  transition: background-color 0.2s, background-image 0.2s;
 }
 
 .memory-table {

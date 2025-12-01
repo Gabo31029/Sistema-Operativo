@@ -6,6 +6,12 @@ public class MemoryBlock {
     private int size;
     private boolean isAllocated;
     private Long processId;
+    /**
+     * Tamaño realmente solicitado por el proceso (en KB).
+     * Puede ser menor que {@code size} cuando se redondea al tamaño de bloque fijo (por ejemplo 32KB).
+     * Se usa para calcular fragmentación interna.
+     */
+    private int requestedSize;
 
     public MemoryBlock() {
     }
@@ -58,10 +64,18 @@ public class MemoryBlock {
         this.processId = processId;
     }
 
+    public int getRequestedSize() {
+        return requestedSize;
+    }
+
+    public void setRequestedSize(int requestedSize) {
+        this.requestedSize = requestedSize;
+    }
+
     @Override
     public String toString() {
-        return String.format("MemoryBlock{id=%d, base=%d, size=%d, allocated=%s, pid=%s}",
-                id, baseAddress, size, isAllocated, processId);
+        return String.format("MemoryBlock{id=%d, base=%d, size=%d, requested=%d, allocated=%s, pid=%s}",
+                id, baseAddress, size, requestedSize, isAllocated, processId);
     }
 }
 
