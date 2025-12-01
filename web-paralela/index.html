@@ -444,7 +444,6 @@
         ];
 
         let cart = [];
-        let processCounter = 0;
 
         // Generar proceso cuando se carga la página
         window.addEventListener('load', () => {
@@ -526,11 +525,9 @@
         }
 
         async function sendProcess(name, arrivalTime, burstTime, priority, memorySize, description) {
-            processCounter++;
-            const processName = `${name}-${processCounter}`;
-            
+            // Enviar el proceso con el nombre base (sin contador)
             const data = {
-                name: processName,
+                name: name,
                 arrivalTime: arrivalTime,
                 burstTime: burstTime,
                 priority: priority,
@@ -550,7 +547,24 @@
 
                 if (response.ok) {
                     const process = await response.json();
-                    console.log(`✅ Proceso "${processName}" enviado al Panel de Control (PID: ${process.pid}) - ${description}`);
+                    // Actualizar el nombre del proceso para incluir el PID real
+                    const processNameWithPid = `${name}-${process.pid}`;
+                    
+                    const updateResponse = await fetch(`${API_URL}/processes/${process.pid}/name`, {
+                        method: 'PUT',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Accept': 'application/json'
+                        },
+                        mode: 'cors',
+                        body: JSON.stringify({ name: processNameWithPid })
+                    });
+
+                    if (updateResponse.ok) {
+                        console.log(`✅ Proceso "${processNameWithPid}" creado y actualizado en el Panel de Control (PID: ${process.pid}) - ${description}`);
+                    } else {
+                        console.log(`✅ Proceso "${name}" enviado al Panel de Control (PID: ${process.pid}) - ${description}`);
+                    }
                 } else {
                     console.error(`❌ Error al enviar proceso: ${response.statusText}`);
                 }

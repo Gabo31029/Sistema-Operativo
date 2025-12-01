@@ -5,15 +5,19 @@ import com.edu.ossimulator.model.ProcessControlBlock;
 import com.edu.ossimulator.service.ProcessSchedulerService;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
+import java.util.Map;
 
 @RestController
 @RequestMapping("/api/processes")
@@ -40,6 +44,27 @@ public class ProcessController {
     @ResponseStatus(HttpStatus.NO_CONTENT)
     public void clearAllProcesses() {
         schedulerService.clearAllProcesses();
+    }
+
+    @PutMapping("/{pid}/name")
+    public ResponseEntity<ProcessControlBlock> updateProcessName(
+            @PathVariable long pid,
+            @RequestBody Map<String, String> request) {
+        String newName = request.get("name");
+        if (newName == null || newName.trim().isEmpty()) {
+            return ResponseEntity.badRequest().build();
+        }
+        
+        boolean updated = schedulerService.updateProcessName(pid, newName);
+        if (updated) {
+            // Return the updated process
+            return schedulerService.getProcessTable().stream()
+                    .filter(p -> p.getPid() == pid)
+                    .findFirst()
+                    .map(ResponseEntity::ok)
+                    .orElse(ResponseEntity.notFound().build());
+        }
+        return ResponseEntity.notFound().build();
     }
 }
 

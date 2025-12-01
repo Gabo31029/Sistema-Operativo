@@ -64,6 +64,10 @@ function handleSubmit() {
   display: flex;
   flex-direction: column;
   height: 100%;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  overflow: hidden;
 }
 
 header {
@@ -141,6 +145,35 @@ input::placeholder {
   background: #1d4ed8;
   transform: translateY(-1px);
   box-shadow: 0 2px 4px rgba(37, 99, 235, 0.2);
+}
+
+/* Responsive: Pantallas pequeñas */
+@media (max-width: 480px) {
+  .panel {
+    padding: 0.75rem;
+  }
+  
+  header h2 {
+    font-size: 0.95rem;
+  }
+  
+  label {
+    font-size: 0.7rem;
+  }
+  
+  label span {
+    font-size: 0.65rem;
+  }
+  
+  input {
+    font-size: 0.8rem;
+    padding: 0.35rem 0.6rem;
+  }
+  
+  .submit-btn {
+    font-size: 0.8rem;
+    padding: 0.5rem 0.9rem;
+  }
 }
 </style>
 

@@ -63,6 +63,10 @@ function handleSubmit() {
   flex-direction: column;
   gap: 1rem;
   height: 100%;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  overflow: hidden;
 }
 
 header {
@@ -83,6 +87,22 @@ header h2 {
   grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
   gap: 0.85rem;
   align-items: end;
+}
+
+@media (max-width: 768px) {
+  .form-grid {
+    grid-template-columns: 1fr;
+  }
+  
+  .reason {
+    grid-column: span 1;
+  }
+  
+  .submit-btn {
+    grid-column: span 1;
+    width: 100%;
+    justify-self: stretch;
+  }
 }
 
 label {
@@ -135,6 +155,32 @@ input:focus {
   background: #065f46;
   transform: translateY(-1px);
   box-shadow: 0 2px 4px rgba(4, 120, 87, 0.2);
+}
+
+/* Responsive: Pantallas pequeñas */
+@media (max-width: 480px) {
+  .panel {
+    padding: 1rem;
+  }
+  
+  header h2 {
+    font-size: 0.95rem;
+  }
+  
+  label {
+    font-size: 0.8rem;
+  }
+  
+  select,
+  input {
+    font-size: 0.85rem;
+    padding: 0.45rem 0.65rem;
+  }
+  
+  .submit-btn {
+    font-size: 0.85rem;
+    padding: 0.5rem 1rem;
+  }
 }
 </style>
 

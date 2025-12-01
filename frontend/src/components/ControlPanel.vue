@@ -158,6 +158,10 @@ const emit = defineEmits(['update:algorithm', 'update:quantum', 'update:ioProbab
   background: #fff;
   border-radius: 12px;
   padding: 1.5rem;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  overflow: hidden;
 }
 
 header {
@@ -167,6 +171,20 @@ header {
   margin-bottom: 1.25rem;
   padding-bottom: 1rem;
   border-bottom: 2px solid #e5e7eb;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+@media (max-width: 768px) {
+  header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  
+  .header-right {
+    width: 100%;
+    flex-wrap: wrap;
+  }
 }
 
 .header-right {
@@ -240,6 +258,16 @@ header {
   align-items: end;
 }
 
+@media (max-width: 768px) {
+  .section-content {
+    grid-template-columns: 1fr;
+  }
+  
+  label.checkbox-label {
+    grid-column: span 1;
+  }
+}
+
 label {
   font-size: 0.85rem;
   font-weight: 600;
@@ -283,6 +311,17 @@ input:focus {
   flex-wrap: wrap;
   gap: 0.5rem;
   justify-content: flex-start;
+}
+
+@media (max-width: 768px) {
+  .buttons {
+    flex-direction: column;
+  }
+  
+  .buttons button {
+    width: 100%;
+    justify-content: center;
+  }
 }
 
 button {
@@ -332,6 +371,50 @@ button.danger:hover:not(:disabled) {
 button:disabled {
   opacity: 0.4;
   cursor: not-allowed;
+}
+
+/* Responsive: Pantallas pequeñas */
+@media (max-width: 480px) {
+  .panel {
+    padding: 1rem;
+  }
+  
+  header h2 {
+    font-size: 0.95rem;
+  }
+  
+  .status {
+    font-size: 0.8rem;
+    padding: 0.3rem 0.6rem;
+  }
+  
+  .mode-toggle {
+    font-size: 0.8rem;
+    padding: 0.4rem 0.8rem;
+  }
+  
+  .section {
+    padding: 0.75rem;
+  }
+  
+  .section h3 {
+    font-size: 0.8rem;
+  }
+  
+  label {
+    font-size: 0.8rem;
+  }
+  
+  select,
+  input {
+    font-size: 0.85rem;
+    padding: 0.45rem 0.65rem;
+  }
+  
+  button {
+    font-size: 0.85rem;
+    padding: 0.5rem 1rem;
+  }
 }
 </style>
 

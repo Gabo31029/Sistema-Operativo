@@ -133,6 +133,10 @@ function getProcessBorderColor(pid) {
   display: flex;
   flex-direction: column;
   height: 100%;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  overflow: hidden;
 }
 
 .panel-header {
@@ -165,11 +169,32 @@ function getProcessBorderColor(pid) {
 .table-container {
   flex: 1;
   overflow-y: auto;
-  overflow-x: hidden;
+  overflow-x: auto;
   max-height: calc(100vh - 300px);
   min-height: 200px;
   border: 1px solid #e5e7eb;
   border-radius: 8px;
+}
+
+@media (max-width: 968px) {
+  .panel {
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
+    overflow: hidden;
+  }
+  
+  .table-container {
+    width: 100%;
+    max-width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  
+  table {
+    min-width: max-content;
+    width: auto;
+  }
 }
 
 .table-container::-webkit-scrollbar {
@@ -200,6 +225,19 @@ td {
   text-align: left;
   padding: 0.5rem;
   border-bottom: 1px solid #e5e7eb;
+  white-space: nowrap;
+}
+
+@media (max-width: 768px) {
+  th,
+  td {
+    padding: 0.4rem 0.35rem;
+    font-size: 0.85rem;
+  }
+  
+  th {
+    font-size: 0.8rem;
+  }
 }
 
 .process-row {
@@ -264,6 +302,54 @@ td {
   }
   50% {
     opacity: 0.7;
+  }
+}
+
+/* Responsive: Pantallas pequeñas */
+@media (max-width: 480px) {
+  .panel {
+    padding: 1rem;
+  }
+  
+  .panel-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.75rem;
+  }
+  
+  .panel-header h2 {
+    font-size: 0.95rem;
+  }
+  
+  .btn-clear {
+    width: 100%;
+    font-size: 0.85rem;
+    padding: 0.45rem 0.9rem;
+  }
+  
+  .table-container {
+    max-height: calc(100vh - 250px);
+    min-height: 150px;
+  }
+  
+  table {
+    min-width: 550px;
+  }
+  
+  th,
+  td {
+    padding: 0.35rem 0.3rem;
+    font-size: 0.8rem;
+  }
+  
+  .pid-badge {
+    font-size: 0.75rem;
+    padding: 0.2rem 0.5rem;
+    min-width: 2rem;
+  }
+  
+  .process-name {
+    font-size: 0.85rem;
   }
 }
 </style>

@@ -56,6 +56,10 @@ defineProps({
   display: flex;
   flex-direction: column;
   height: 100%;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  overflow: hidden;
 }
 
 .panel h2 {
@@ -71,6 +75,13 @@ defineProps({
   gap: 1rem;
   flex: 1;
   min-height: 0;
+}
+
+@media (max-width: 768px) {
+  .queues {
+    grid-template-columns: 1fr;
+    gap: 0.75rem;
+  }
 }
 
 .queue-column {
@@ -147,6 +158,31 @@ li.empty {
   text-align: center;
   background: transparent;
   border: none;
+}
+
+/* Responsive: Pantallas pequeñas */
+@media (max-width: 480px) {
+  .panel {
+    padding: 1rem;
+  }
+  
+  .panel h2 {
+    font-size: 0.95rem;
+  }
+  
+  .queue-column h3 {
+    font-size: 0.85rem;
+  }
+  
+  .queue-container {
+    max-height: calc(100vh - 250px);
+    min-height: 80px;
+  }
+  
+  li {
+    font-size: 0.8rem;
+    padding: 0.35rem 0.5rem;
+  }
 }
 </style>
 

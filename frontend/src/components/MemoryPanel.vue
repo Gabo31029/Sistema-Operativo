@@ -261,6 +261,10 @@ function getBlockStyle(block) {
   border-radius: 8px;
   padding: 1rem;
   border: 1px solid #e5e7eb;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  overflow: hidden;
 }
 
 .memory-header {
@@ -307,6 +311,17 @@ function getBlockStyle(block) {
   flex-wrap: wrap;
 }
 
+@media (max-width: 768px) {
+  .memory-controls {
+    flex-direction: column;
+  }
+  
+  .memory-controls button,
+  .memory-controls select {
+    width: 100%;
+  }
+}
+
 .memory-controls button,
 .memory-controls select {
   padding: 0.5rem 1rem;
@@ -325,6 +340,18 @@ function getBlockStyle(block) {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   gap: 0.75rem;
+}
+
+@media (max-width: 768px) {
+  .memory-stats {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: 480px) {
+  .memory-stats {
+    grid-template-columns: 1fr;
+  }
 }
 
 .stat-item {
@@ -348,11 +375,25 @@ function getBlockStyle(block) {
 .memory-visualization {
   display: flex;
   width: 100%;
+  max-width: 100%;
   height: 60px;
   border: 2px solid #e5e7eb;
   border-radius: 4px;
-  overflow: hidden;
+  overflow-x: auto;
+  overflow-y: hidden;
   background: #f9fafb;
+  -webkit-overflow-scrolling: touch;
+  box-sizing: border-box;
+}
+
+@media (max-width: 480px) {
+  .memory-visualization {
+    height: 50px;
+  }
+  
+  .block-label {
+    font-size: 0.65rem;
+  }
 }
 
 .memory-block {
@@ -384,8 +425,10 @@ function getBlockStyle(block) {
 
 .memory-table {
   width: 100%;
+  max-width: 100%;
   border-collapse: collapse;
   font-size: 0.9rem;
+  box-sizing: border-box;
 }
 
 .memory-table th,
@@ -423,6 +466,48 @@ function getBlockStyle(block) {
   font-size: 0.85rem;
   min-width: 2rem;
   text-align: center;
+}
+
+/* Responsive: Tabla de memoria */
+@media (max-width: 768px) {
+  .memory-table {
+    font-size: 0.85rem;
+    display: block;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    width: 100%;
+    max-width: 100%;
+  }
+  
+  .memory-table th,
+  .memory-table td {
+    padding: 0.4rem 0.35rem;
+    white-space: nowrap;
+  }
+}
+
+/* Responsive: Pantallas pequeñas */
+@media (max-width: 480px) {
+  .memory-panel {
+    padding: 0.75rem;
+  }
+  
+  .memory-header h2 {
+    font-size: 0.95rem;
+  }
+  
+  .memory-table {
+    font-size: 0.8rem;
+  }
+  
+  .memory-table th,
+  .memory-table td {
+    padding: 0.35rem 0.3rem;
+  }
+  
+  .stat-item strong {
+    font-size: 1rem;
+  }
 }
 </style>
 

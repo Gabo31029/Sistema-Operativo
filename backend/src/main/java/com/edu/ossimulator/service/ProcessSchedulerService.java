@@ -141,6 +141,18 @@ public class ProcessSchedulerService {
         return new ArrayList<>(processTable);
     }
 
+    public synchronized boolean updateProcessName(long pid, String newName) {
+        Optional<ProcessControlBlock> process = processTable.stream()
+                .filter(p -> p.getPid() == pid)
+                .findFirst();
+        
+        if (process.isPresent()) {
+            process.get().setName(newName);
+            return true;
+        }
+        return false;
+    }
+
     public synchronized void clearAllProcesses() {
         // Deallocate memory for all processes before clearing
         for (ProcessControlBlock pcb : processTable) {
